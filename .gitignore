@@ -1,9 +1,16 @@
+# أسرار وبيانات حساسة — لا تُرفع أبدًا
 public_html/includes/config.local.php
+aramio_config.php
 config.local.php
 .env
-*.sql.bak
-public_html/uploads/*
-!public_html/uploads/.gitkeep
-!public_html/uploads/**/.gitkeep
-storage/
+*.sql
+!database/*.sql
 *.log
+
+# ملفات المستخدمين المرفوعة (تبقى على الاستضافة فقط)
+public_html/uploads/*
+!public_html/uploads/.htaccess
+!public_html/uploads/.gitkeep
+!public_html/uploads/*/
+public_html/uploads/*/*
+!public_html/uploads/*/.gitkeep

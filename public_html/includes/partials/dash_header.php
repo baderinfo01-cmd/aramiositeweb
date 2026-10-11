@@ -61,7 +61,7 @@ try { $ns = $pdo->prepare("SELECT * FROM user_notifications WHERE user_id=? ORDE
           <?php foreach ($notes as $n): ?><a class="dropdown-item py-2 <?= $n['is_read'] ? 'text-muted' : 'fw-bold' ?>" href="<?= e($n['link'] ?: '#') ?>" style="white-space:normal"><?= e($n['title']) ?><small class="d-block text-muted fw-normal"><?= e($n['body']) ?></small></a><?php endforeach; ?>
         </div></div>
       <div class="dropdown"><button class="tb" data-bs-toggle="dropdown" aria-label="language"><i class="fa-solid fa-globe"></i></button>
-        <ul class="dropdown-menu dropdown-menu-end lang-menu p-2"><?php foreach (SUPPORTED_LANGS as $code => $info): ?><li><a class="dropdown-item <?= $code === $lang ? 'active' : '' ?>" href="<?= e(lang_switcher_url($code)) ?>"><?= $info['flag'] ?> <?= e($info['name']) ?></a></li><?php endforeach; ?></ul></div>
+        <ul class="dropdown-menu dropdown-menu-end lang-menu p-2"><?php foreach (SUPPORTED_LANGS as $code => $li): ?><li><a class="dropdown-item <?= $code === $lang ? 'active' : '' ?>" href="<?= e(lang_switcher_url($code)) ?>"><?= $li['flag'] ?> <?= e($li['name']) ?></a></li><?php endforeach; ?></ul></div>
       <button class="tb" data-theme-toggle aria-label="theme"><i data-theme-icon class="fa-solid fa-moon"></i></button>
       <div class="d-flex align-items-center gap-2 ps-2"><img src="<?= e(avatar_url($me['avatar'] ?? null, $me['full_name'], $B)) ?>" width="42" height="42" class="rounded-circle" style="object-fit:cover" alt="">
         <div class="d-none d-md-block lh-1"><b><?= e($me['full_name']) ?></b><br><small class="text-muted"><?= e($roleLabel) ?></small></div></div>

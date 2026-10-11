@@ -13,7 +13,7 @@ RewriteEngine On
 # إجبار HTTPS (فعّله بعد تفعيل شهادة SSL)
 # RewriteCond %{HTTPS} off
 # RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
-RewriteRule ^(includes|lang|storage)/ - [F,L]
+RewriteRule ^(includes|lang)/ - [F,L]
 </IfModule>
 
 ErrorDocument 404 /404.php

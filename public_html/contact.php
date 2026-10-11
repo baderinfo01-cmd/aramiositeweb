@@ -31,7 +31,7 @@ require 'includes/partials/header.php';
   <div class="col-lg-7"><div class="card-x p-4">
     <?php if ($ok): ?><div class="alert alert-success"><i class="fa-solid fa-circle-check"></i> <?= e(t('contact_ok')) ?></div><?php endif; ?>
     <?php if ($error): ?><div class="alert alert-danger"><?= e($error) ?></div><?php endif; ?>
-    <form method="post"><?= csrf_field() ?><input type="text" name="website" tabindex="-1" autocomplete="off" style="position:absolute;left:-9999px" aria-hidden="true">
+    <form method="post"><?= csrf_field() ?><input type="text" name="website" tabindex="-1" autocomplete="off" style="position:absolute;opacity:0;height:0;width:0;border:0;padding:0;pointer-events:none" aria-hidden="true">
       <div class="row g-3">
         <div class="col-md-6"><label class="form-label fw-bold small"><?= e(t('name')) ?> *</label><input name="name" class="form-control" required value="<?= e($v['name']) ?>"></div>
         <div class="col-md-6"><label class="form-label fw-bold small"><?= e(t('phone')) ?></label><input name="phone" class="form-control" dir="ltr" value="<?= e($v['phone']) ?>"></div>

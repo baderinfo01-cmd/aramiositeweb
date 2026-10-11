@@ -48,8 +48,8 @@ $ai_on = ai_available();
         <div class="dropdown">
           <button class="btn-icon" data-bs-toggle="dropdown" aria-label="<?= e(t('language')) ?>"><i class="fa-solid fa-globe"></i></button>
           <ul class="dropdown-menu lang-menu p-2">
-            <?php foreach (SUPPORTED_LANGS as $code => $info): ?>
-              <li><a class="dropdown-item <?= $code === $lang ? 'active' : '' ?>" href="<?= e(lang_switcher_url($code)) ?>"><?= $info['flag'] ?> <?= e($info['name']) ?></a></li>
+            <?php foreach (SUPPORTED_LANGS as $code => $li): ?>
+              <li><a class="dropdown-item <?= $code === $lang ? 'active' : '' ?>" href="<?= e(lang_switcher_url($code)) ?>"><?= $li['flag'] ?> <?= e($li['name']) ?></a></li>
             <?php endforeach; ?>
           </ul>
         </div>

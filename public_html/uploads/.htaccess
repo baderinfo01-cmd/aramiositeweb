@@ -1,0 +1,5 @@
+# لا تنفّذ أي سكربت داخل الرفع
+<FilesMatch "\.(php|phtml|php[0-9]|phar|cgi|pl|py|sh)$">
+  Require all denied
+</FilesMatch>
+Options -Indexes -ExecCGI
