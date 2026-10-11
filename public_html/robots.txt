@@ -1,0 +1,9 @@
+User-agent: *
+Disallow: /admin/
+Disallow: /trainer/
+Disallow: /trainee/
+Disallow: /api/
+Disallow: /includes/
+Allow: /
+
+Sitemap: https://aramiosmartglobal.com/sitemap.php

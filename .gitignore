@@ -1,0 +1,9 @@
+public_html/includes/config.local.php
+config.local.php
+.env
+*.sql.bak
+public_html/uploads/*
+!public_html/uploads/.gitkeep
+!public_html/uploads/**/.gitkeep
+storage/
+*.log
