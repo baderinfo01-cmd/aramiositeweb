@@ -38,7 +38,7 @@ echo wa_render();
   <td><a href="../course.php?id=<?= (int)$c['id'] ?>" target="_blank" class="fw-bold text-reset"><?= e($c['title_ar']) ?></a><div class="small text-muted"><?= e($c['title_en']) ?></div><span class="st st-mute"><?= e($c['cat_name']) ?></span> <span class="st st-info"><?= e(type_label($c['training_type'])) ?></span></td>
   <td><?= e($c['trainer_name']) ?></td>
   <td class="fw-bold"><?= $c['price_usd'] > 0 ? e(money_usd($c['price_usd'])) . '<br>' : '' ?><?= $c['price_dzd'] > 0 ? e(money_dzd($c['price_dzd'])) : '' ?></td>
-  <td class="small"><?php foreach (['usd' => '$', 'dzd' => 'DZD'] as $cur => $sym) if ($c["commission_type_$cur"]) echo e($c["commission_value_$cur"] . ($c["commission_type_$cur"] === 'percentage' ? '%' : " $sym")) . " ($sym)<br>"; ?></td>
+  <td class="small"><?php foreach (['usd' => '$', 'dzd' => 'DZD'] as $cur => $sym) if ($c["commission_type_$cur"] && $c["commission_value_$cur"] !== null) echo e($c["commission_value_$cur"] . ($c["commission_type_$cur"] === 'percentage' ? '%' : " $sym")) . " ($sym)<br>"; ?></td>
   <td><?= status_badge($c['status']) ?></td>
   <td class="text-end text-nowrap">
     <?php if ($c['status'] === 'pending'): ?><button class="btn-soft btn-soft-ok" data-bs-toggle="modal" data-bs-target="#pubModal" data-id="<?= (int)$c['id'] ?>" data-title="<?= e($c['title_ar']) ?>" data-usd="<?= e($c['price_usd']) ?>" data-dzd="<?= e($c['price_dzd']) ?>"><i class="fa-solid fa-check"></i> <?= e(d('مراجعة ونشر', 'Review & publish')) ?></button>
