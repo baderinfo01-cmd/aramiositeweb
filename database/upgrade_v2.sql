@@ -135,3 +135,8 @@ WHERE (SELECT COUNT(*) FROM faqs) = 1;
 INSERT INTO faqs (question_ar, question_en, answer_ar, answer_en, sort_order)
 SELECT 'هل الدورات متاحة بلغات متعددة؟','Are courses available in multiple languages?','نعم، الموقع يدعم العربية والإنجليزية والفرنسية والتركية والإسبانية والملايو، ويمكن ترجمة محتوى الدورات بالذكاء الاصطناعي.','Yes. The site supports Arabic, English, French, Turkish, Spanish and Malay, and course content can be translated with AI.',3
 WHERE (SELECT COUNT(*) FROM faqs) = 2;
+
+-- إصلاح: تأكيد مدفوعات الاستشارات كان يحاول الكتابة في عمود booking_id غير الموجود في trainer_earnings
+-- (يتطلب MariaDB 10.3+ وهو متوفر في Hostinger). تعديلان آمنان: إضافة عمود اختياري وجعل order_id يقبل NULL.
+ALTER TABLE trainer_earnings MODIFY order_id INT(11) NULL;
+ALTER TABLE trainer_earnings ADD COLUMN IF NOT EXISTS booking_id INT(11) NULL AFTER order_id;

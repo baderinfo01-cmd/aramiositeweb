@@ -1,59 +1,26 @@
 <?php
 require_once 'admin_init.php';
-$success_msg = '';
-
-// 1. إضافة إشعار جديد
-if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['add_noti'])) {
-    $pdo->prepare("INSERT INTO popup_notifications (message_ar, message_en) VALUES (?, ?)")->execute([$_POST['msg_ar'], $_POST['msg_en']]);
-    $success_msg = "تمت إضافة الإشعار بنجاح.";
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    require_post_csrf(); $act = $_POST['act'] ?? '';
+    if ($act === 'add') { $ar = trim((string)$_POST['msg_ar']); $en = trim((string)$_POST['msg_en']); if ($ar !== '') { $pdo->prepare("INSERT INTO popup_notifications (message_ar, message_en) VALUES (?,?)")->execute([mb_substr($ar, 0, 255), mb_substr($en ?: $ar, 0, 255)]); flash('ok', d('تمت الإضافة.', 'Added.')); } }
+    elseif ($act === 'timer') { setSetting('popup_timer', (string)max(4, (int)$_POST['popup_timer'])); flash('ok', d('تم تحديث المدة.', 'Timer updated.')); }
+    elseif ($act === 'toggle') { $pdo->prepare("UPDATE popup_notifications SET status = 1 - status WHERE id=?")->execute([(int)$_POST['id']]); }
+    elseif ($act === 'delete') { $pdo->prepare("DELETE FROM popup_notifications WHERE id=?")->execute([(int)$_POST['id']]); flash('ok', d('تم الحذف.', 'Deleted.')); }
+    elseif ($act === 'bulk' && !empty($_POST['items'])) { $n = 0; foreach ((array)$_POST['items'] as $it) { $ar = trim((string)($it['ar'] ?? '')); if ($ar !== '') { $pdo->prepare("INSERT INTO popup_notifications (message_ar, message_en) VALUES (?,?)")->execute([mb_substr($ar, 0, 255), mb_substr(trim((string)($it['en'] ?? '')) ?: $ar, 0, 255)]); $n++; } } flash('ok', "+$n"); }
+    redirect('notifications.php');
 }
-// 2. تحديث وقت الظهور
-if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_timer'])) {
-    $pdo->prepare("UPDATE settings SET setting_value_ar = ? WHERE setting_key = 'popup_timer'")->execute([$_POST['popup_timer']]);
-    $success_msg = "تم تحديث وقت ظهور الإشعارات.";
-}
-// 3. حذف إشعار
-if (isset($_GET['delete'])) {
-    $pdo->prepare("DELETE FROM popup_notifications WHERE id = ?")->execute([$_GET['delete']]);
-    $success_msg = "تم حذف الإشعار.";
-}
-
-$notifications = $pdo->query("SELECT * FROM popup_notifications ORDER BY created_at DESC")->fetchAll();
-$current_timer = $pdo->query("SELECT setting_value_ar FROM settings WHERE setting_key = 'popup_timer'")->fetchColumn() ?: 10;
-require_once 'includes/header.php';
+$list = $pdo->query("SELECT * FROM popup_notifications ORDER BY id DESC")->fetchAll(); $timer = (int)(getSetting($pdo, 'popup_timer') ?: 10);
+$dashTitle = d('الإشعارات المنبثقة للزوار', 'Visitor popup notices');
+require '../includes/partials/dash_header.php';
 ?>
-<div class="d-flex justify-content-between mb-4"><h3 class="fw-bold text-dark"><i class="fa-solid fa-bell text-warning me-2"></i> الإشعارات المنبثقة للزوار</h3></div>
-<?php if($success_msg): ?> <div class="alert alert-success rounded-pill fw-bold"><i class="fa-solid fa-check-circle"></i> <?php echo $success_msg; ?></div> <?php endif; ?>
-
-<div class="row g-4">
-    <!-- إعدادات الوقت -->
-    <div class="col-12">
-        <div class="card border-0 shadow-sm rounded-4 p-3 bg-white d-flex flex-row align-items-center justify-content-between">
-            <h6 class="fw-bold m-0"><i class="fa-solid fa-stopwatch text-primary"></i> الفاصل الزمني بين ظهور إشعار وآخر:</h6>
-            <form method="POST" class="d-flex gap-2">
-                <input type="number" name="popup_timer" class="form-control text-center fw-bold" value="<?php echo $current_timer; ?>" min="3" style="width: 100px;">
-                <span class="mt-2 text-muted fw-bold">ثواني</span>
-                <button type="submit" name="update_timer" class="btn btn-primary fw-bold">تحديث الوقت</button>
-            </form>
-        </div>
-    </div>
-    
-    <div class="col-lg-7">
-        <div class="card border-0 shadow-sm rounded-4 h-100"><div class="card-header bg-white py-3 border-0"><h5 class="fw-bold m-0 text-primary">الإشعارات الحالية</h5></div>
-        <table class="table text-center align-middle mb-0"><thead class="table-light"><tr><th>النص العربي</th><th>النص الإنجليزي</th><th>إجراء</th></tr></thead><tbody>
-            <?php foreach($notifications as $n): ?><tr><td class="fw-bold text-start ps-3"><?php echo htmlspecialchars($n['message_ar']); ?></td><td class="text-muted text-start ps-3" dir="ltr"><?php echo htmlspecialchars($n['message_en']); ?></td><td><a href="?delete=<?php echo $n['id']; ?>" class="btn btn-danger btn-sm rounded-circle"><i class="fa-solid fa-trash"></i></a></td></tr><?php endforeach; ?>
-        </tbody></table></div>
-    </div>
-    
-    <div class="col-lg-5">
-        <div class="card border-0 shadow-sm rounded-4 border-left-warning p-4">
-            <h5 class="fw-bold mb-4 text-dark"><i class="fa-solid fa-plus-circle text-warning"></i> إضافة إشعار جديد</h5>
-            <form method="POST">
-                <input type="text" name="msg_ar" class="form-control fw-bold mb-3" placeholder="مثال: اشترك محمد في الدورة (عربي)" required>
-                <input type="text" name="msg_en" class="form-control mb-4 text-start" dir="ltr" placeholder="Example: Mohammed enrolled... (English)" required>
-                <button type="submit" name="add_noti" class="btn btn-warning w-100 fw-bold rounded-pill shadow-sm text-dark">إضافة وعرض في الموقع</button>
-            </form>
-        </div>
-    </div>
-</div>
-</div></div><script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script></body></html>
+<div class="row g-3"><div class="col-lg-5"><div class="dcard"><div class="dcard-h"><?= e(d('إضافة إشعار', 'Add notice')) ?></div><form method="post" class="dcard-b d-grid gap-2"><?= csrf_field() ?><input type="hidden" name="act" value="add">
+  <input name="msg_ar" class="form-control" required maxlength="255" placeholder="النص بالعربية"><input name="msg_en" class="form-control" maxlength="255" dir="ltr" placeholder="English text"><button class="btn-aramio"><?= e(t('save')) ?></button></form></div>
+  <div class="dcard mt-3"><div class="dcard-h"><?= e(d('مدة الظهور (ثوانٍ)', 'Interval (seconds)')) ?></div><form method="post" class="dcard-b d-flex gap-2"><?= csrf_field() ?><input type="hidden" name="act" value="timer"><input type="number" name="popup_timer" min="4" value="<?= $timer ?>" class="form-control"><button class="btn-soft btn-soft-ok"><?= e(t('save')) ?></button></form></div>
+  <div class="dcard mt-3"><div class="dcard-h"><span><i class="fa-solid fa-wand-magic-sparkles sparkle"></i> <?= e(d('توليد بالذكاء الاصطناعي', 'Generate with AI')) ?></span><button class="ai-btn" id="genBtn"><?= e(d('اقترح 5', 'Suggest 5')) ?></button></div>
+    <form method="post" class="dcard-b" id="genForm"><?= csrf_field() ?><input type="hidden" name="act" value="bulk"><div id="genOut" class="small text-muted"><?= e(d('يولّد رسائل إثبات اجتماعي قصيرة اعتمادًا على دوراتك.', 'Generates short social-proof messages from your courses.')) ?></div></form></div></div>
+<div class="col-lg-7"><div class="dcard"><div class="table-wrap"><table class="dtable"><thead><tr><th>AR / EN</th><th></th></tr></thead><tbody>
+<?php foreach ($list as $n): ?><tr class="<?= $n['status'] ? '' : 'opacity-50' ?>"><td><?= e($n['message_ar']) ?><div class="small text-muted" dir="ltr"><?= e($n['message_en']) ?></div></td><td class="text-end text-nowrap"><?= action_btn('', ['act' => 'toggle', 'id' => $n['id']], 'btn-soft-warn', '', $n['status'] ? 'fa-eye' : 'fa-eye-slash') ?><?= action_btn('', ['act' => 'delete', 'id' => $n['id']], 'btn-soft-bad', d('حذف؟', 'Delete?'), 'fa-trash') ?></td></tr><?php endforeach; ?>
+<?php if (!$list): ?><tr><td colspan="2" class="empty"><i class="fa-solid fa-bell"></i></td></tr><?php endif; ?></tbody></table></div></div></div></div>
+<?php
+$footExtra = '<script>genBtn.addEventListener("click",function(){var s=this;AI_ASK("../api/ai_tools.php",{action:"popups"},function(r){if(!r.ok){alert(r.message||"error");return}var o=document.getElementById("genOut");o.innerHTML="";(r.data.items||[]).forEach(function(it,i){var d=document.createElement("div");d.className="mb-2";d.innerHTML=\'<input class="form-control form-control-sm mb-1" name="items[\'+i+\'][ar]"><input dir="ltr" class="form-control form-control-sm" name="items[\'+i+\'][en]">\';d.children[0].value=it.ar||"";d.children[1].value=it.en||"";o.appendChild(d)});var b=document.createElement("button");b.className="btn-aramio w-100 mt-2";b.textContent=' . json_encode(t('save')) . ';o.appendChild(b)},s)});</script>';
+require '../includes/partials/dash_footer.php';

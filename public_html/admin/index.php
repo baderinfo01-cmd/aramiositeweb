@@ -1,141 +1,90 @@
 <?php
 require_once 'admin_init.php';
+$rate = exchange_rate();
+$q1 = fn($sql, $p = []) => (function () use ($pdo, $sql, $p) { $s = $pdo->prepare($sql); $s->execute($p); return $s->fetchColumn(); })();
 
-$exchange_rate = (float)($pdo->query("SELECT setting_value_ar FROM settings WHERE setting_key = 'exchange_rate'")->fetchColumn() ?: 135);
+$rev_usd = (float)$q1("SELECT COALESCE(SUM(amount_usd),0) FROM course_orders WHERE status='approved'") + (float)$q1("SELECT COALESCE(SUM(amount_usd),0) FROM consultation_bookings WHERE status='approved'");
+$rev_dzd = (float)$q1("SELECT COALESCE(SUM(amount_dzd),0) FROM course_orders WHERE status='approved'") + (float)$q1("SELECT COALESCE(SUM(amount_dzd),0) FROM consultation_bookings WHERE status='approved'");
+$tr_usd = (float)$q1("SELECT COALESCE(SUM(amount),0) FROM trainer_earnings WHERE currency='usd'");
+$tr_dzd = (float)$q1("SELECT COALESCE(SUM(amount),0) FROM trainer_earnings WHERE currency='dzd'");
+$ex_usd = (float)$q1("SELECT COALESCE(SUM(amount),0) FROM expenses WHERE currency='usd'");
+$ex_dzd = (float)$q1("SELECT COALESCE(SUM(amount),0) FROM expenses WHERE currency='dzd'");
+$income = $rev_usd * $rate + $rev_dzd;
+$net = $income - ($tr_usd * $rate + $tr_dzd) - ($ex_usd * $rate + $ex_dzd);
 
-$rev_course_usd = $pdo->query("SELECT COALESCE(SUM(amount_usd), 0) FROM course_orders WHERE status = 'approved'")->fetchColumn();
-$rev_course_dzd = $pdo->query("SELECT COALESCE(SUM(amount_dzd), 0) FROM course_orders WHERE status = 'approved'")->fetchColumn();
-$rev_cons_usd = $pdo->query("SELECT COALESCE(SUM(amount_usd), 0) FROM consultation_bookings WHERE status = 'approved'")->fetchColumn();
-$rev_cons_dzd = $pdo->query("SELECT COALESCE(SUM(amount_dzd), 0) FROM consultation_bookings WHERE status = 'approved'")->fetchColumn();
+$students = (int)$q1("SELECT COUNT(*) FROM users WHERE role='trainee'");
+$trainers = (int)$q1("SELECT COUNT(*) FROM users WHERE role='trainer'");
+$pendCourses = (int)$q1("SELECT COUNT(*) FROM courses WHERE status='pending'");
+$pendOrders = (int)$q1("SELECT COUNT(*) FROM course_orders WHERE status='pending'");
+$newMsgs = (int)$q1("SELECT COUNT(*) FROM contact_messages WHERE is_read=0");
+$newUsers7 = (int)$q1("SELECT COUNT(*) FROM users WHERE created_at >= (NOW() - INTERVAL 7 DAY) AND role='trainee'");
 
-$total_rev_usd = $rev_course_usd + $rev_cons_usd;
-$total_rev_dzd = $rev_course_dzd + $rev_cons_dzd;
+// سلاسل الرسوم (آخر 6 أشهر)
+$months = []; for ($i = 5; $i >= 0; $i--) $months[] = date('Y-m', strtotime("-$i month"));
+$revRows = $pdo->query("SELECT DATE_FORMAT(created_at,'%Y-%m') m, COALESCE(SUM(amount_usd),0) usd, COALESCE(SUM(amount_dzd),0) dzd, COUNT(*) n FROM course_orders WHERE status='approved' AND created_at >= (NOW() - INTERVAL 6 MONTH) GROUP BY m")->fetchAll(PDO::FETCH_UNIQUE);
+$revSeries = $ordSeries = [];
+foreach ($months as $m) { $r = $revRows[$m] ?? ['usd' => 0, 'dzd' => 0, 'n' => 0]; $revSeries[] = round($r['usd'] + $r['dzd'] / $rate, 2); $ordSeries[] = (int)$r['n']; }
+$usersRows = $pdo->query("SELECT DATE_FORMAT(created_at,'%Y-%m') m, COUNT(*) n FROM users WHERE role='trainee' AND created_at >= (NOW() - INTERVAL 6 MONTH) GROUP BY m")->fetchAll(PDO::FETCH_KEY_PAIR);
+$userSeries = array_map(fn($m) => (int)($usersRows[$m] ?? 0), $months);
+$statusRows = $pdo->query("SELECT status, COUNT(*) n FROM course_orders GROUP BY status")->fetchAll(PDO::FETCH_KEY_PAIR);
+$countryRows = $pdo->query("SELECT COALESCE(NULLIF(country,''),'—') c, COUNT(*) n FROM users WHERE role='trainee' GROUP BY c ORDER BY n DESC LIMIT 6")->fetchAll();
+$topCourses = $pdo->query("SELECT c.id, c.title_ar, c.title_en, COUNT(*) n FROM course_orders o JOIN courses c ON c.id=o.course_id WHERE o.status='approved' GROUP BY c.id ORDER BY n DESC LIMIT 5")->fetchAll();
+$recent = $pdo->query("SELECT o.id, o.status, o.amount_usd, o.amount_dzd, o.created_at, u.full_name, c.title_ar, c.title_en FROM course_orders o JOIN users u ON u.id=o.user_id JOIN courses c ON c.id=o.course_id ORDER BY o.id DESC LIMIT 6")->fetchAll();
+$aiCalls = (int)$q1("SELECT COUNT(*) FROM ai_logs WHERE created_at >= (NOW() - INTERVAL 30 DAY)");
 
-$trainers_cut_usd = $pdo->query("SELECT COALESCE(SUM(amount), 0) FROM trainer_earnings WHERE currency = 'usd'")->fetchColumn();
-$trainers_cut_dzd = $pdo->query("SELECT COALESCE(SUM(amount), 0) FROM trainer_earnings WHERE currency = 'dzd'")->fetchColumn();
-
-$exp_usd = $pdo->query("SELECT COALESCE(SUM(amount), 0) FROM expenses WHERE currency = 'usd'")->fetchColumn();
-$exp_dzd = $pdo->query("SELECT COALESCE(SUM(amount), 0) FROM expenses WHERE currency = 'dzd'")->fetchColumn();
-
-$total_income_in_dzd = ($total_rev_usd * $exchange_rate) + $total_rev_dzd;
-$total_expenses_in_dzd = ($trainers_cut_usd * $exchange_rate) + $trainers_cut_dzd + ($exp_usd * $exchange_rate) + $exp_dzd;
-$net_profit_dzd = $total_income_in_dzd - $total_expenses_in_dzd;
-
-$total_students = $pdo->query("SELECT COUNT(*) FROM users WHERE role = 'trainee'")->fetchColumn();
-$total_trainers = $pdo->query("SELECT COUNT(*) FROM users WHERE role = 'trainer'")->fetchColumn();
-$pending_courses = $pdo->query("SELECT COUNT(*) FROM courses WHERE status = 'pending'")->fetchColumn();
-$pending_orders = $pdo->query("SELECT COUNT(*) FROM course_orders WHERE status = 'pending'")->fetchColumn();
-$online_now = rand(12, 45); 
-
-require_once 'includes/header.php';
+$dashTitle = d('نظرة عامة على الأكاديمية', 'Academy overview'); $needChart = true;
+require '../includes/partials/dash_header.php';
 ?>
-
-<div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-3">
-    <div>
-        <h3 class="fw-bold mb-1 text-dark">نظرة عامة على الأكاديمية</h3>
-        <p class="text-muted fw-bold m-0"><i class="fa-regular fa-calendar-check me-1"></i> إحصائيات اليوم: <?php echo date('Y-m-d'); ?></p>
-    </div>
-    <div class="d-flex gap-2">
-        <a href="financial.php" class="btn btn-primary rounded-pill px-4 fw-bold shadow-sm" style="background-color: #051024; border:none;">
-            <i class="fa-solid fa-file-invoice-dollar me-2"></i> مراجعة الطلبات
-            <?php if($pending_orders > 0): ?> <span class="badge bg-danger ms-2 rounded-circle"><?php echo $pending_orders; ?></span> <?php endif; ?>
-        </a>
-    </div>
+<div class="row g-3 mb-4">
+  <?php foreach ([
+    ['bg-g1','fa-arrow-trend-up', d('إجمالي المداخيل','Total revenue'), money_usd($rev_usd), money_dzd($rev_dzd)],
+    ['bg-g3','fa-users-rectangle', d('مستحقات المدربين','Trainer share'), money_usd($tr_usd), money_dzd($tr_dzd)],
+    ['bg-g4','fa-money-bill-transfer', d('المصاريف','Expenses'), money_usd($ex_usd), money_dzd($ex_dzd)],
+    ['bg-g5','fa-crown', d('صافي الأرباح','Net profit'), money_dzd($net), '≈ ' . money_usd($rate ? $net / $rate : 0)],
+  ] as [$bg,$ic,$lb,$v,$sub]): ?>
+  <div class="col-sm-6 col-xl-3"><div class="dcard kpi"><div class="ic <?= $bg ?>"><i class="fa-solid <?= $ic ?>"></i></div><div><div class="l"><?= e($lb) ?></div><div class="v"><?= e($v) ?></div><div class="sub"><?= e($sub) ?></div></div></div></div>
+  <?php endforeach; ?>
+</div>
+<div class="row g-3 mb-4">
+  <?php foreach ([
+    ['bg-g2','fa-user-graduate', d('متدرب مسجل','Trainees'), $students, '+' . $newUsers7 . ' ' . d('هذا الأسبوع','this week'), 'users.php'],
+    ['bg-g1','fa-chalkboard-user', d('مدرب معتمد','Trainers'), $trainers, '', 'users.php'],
+    ['bg-g3','fa-photo-film', d('دورات بانتظار الموافقة','Courses to review'), $pendCourses, '', 'courses.php'],
+    ['bg-g4','fa-file-invoice-dollar', d('طلبات بانتظار المراجعة','Orders to review'), $pendOrders, '', 'financial.php'],
+  ] as [$bg,$ic,$lb,$v,$sub,$href]): ?>
+  <div class="col-sm-6 col-xl-3"><a href="<?= $href ?>" class="text-reset"><div class="dcard kpi"><div class="ic <?= $bg ?>"><i class="fa-solid <?= $ic ?>"></i></div><div><div class="l"><?= e($lb) ?></div><div class="v"><?= number_format($v) ?></div><div class="sub"><?= e($sub) ?></div></div></div></a></div>
+  <?php endforeach; ?>
 </div>
 
-<h5 class="fw-bold mb-3 text-secondary"><i class="fa-solid fa-vault me-2"></i> المركز المالي الشامل</h5>
-<div class="row g-4 mb-5">
-    <!-- المداخيل -->
-    <div class="col-xl-3 col-md-6">
-        <div class="admin-card card h-100 p-4 border-bottom border-4 border-success">
-            <div class="d-flex justify-content-between align-items-center mb-2">
-                <div>
-                    <p class="text-muted fw-bold mb-1 small text-uppercase">إجمالي المداخيل</p>
-                    <h4 class="fw-black mb-0 text-dark">$<?php echo number_format($total_rev_usd, 2); ?></h4>
-                </div>
-                <div class="bg-success bg-opacity-10 text-success rounded-3 p-3 fs-3"><i class="fa-solid fa-arrow-trend-up"></i></div>
-            </div>
-            <div class="text-success fw-bold small"><i class="fa-solid fa-plus text-muted me-1"></i> <?php echo number_format($total_rev_dzd); ?> د.ج</div>
-        </div>
-    </div>
-    <!-- مستحقات المدربين -->
-    <div class="col-xl-3 col-md-6">
-        <div class="admin-card card h-100 p-4 border-bottom border-4 border-warning">
-            <div class="d-flex justify-content-between align-items-center mb-2">
-                <div>
-                    <p class="text-muted fw-bold mb-1 small text-uppercase">مستحقات المدربين</p>
-                    <h4 class="fw-black mb-0 text-dark">$<?php echo number_format($trainers_cut_usd, 2); ?></h4>
-                </div>
-                <div class="bg-warning bg-opacity-10 text-warning rounded-3 p-3 fs-3"><i class="fa-solid fa-users-rectangle"></i></div>
-            </div>
-            <div class="text-warning text-dark fw-bold small"><i class="fa-solid fa-plus text-muted me-1"></i> <?php echo number_format($trainers_cut_dzd); ?> د.ج</div>
-        </div>
-    </div>
-    <!-- المصاريف -->
-    <div class="col-xl-3 col-md-6">
-        <div class="admin-card card h-100 p-4 border-bottom border-4 border-danger">
-            <div class="d-flex justify-content-between align-items-center mb-2">
-                <div>
-                    <p class="text-muted fw-bold mb-1 small text-uppercase">إجمالي المصاريف</p>
-                    <h4 class="fw-black mb-0 text-dark">$<?php echo number_format($exp_usd, 2); ?></h4>
-                </div>
-                <div class="bg-danger bg-opacity-10 text-danger rounded-3 p-3 fs-3"><i class="fa-solid fa-money-bill-transfer"></i></div>
-            </div>
-            <div class="text-danger fw-bold small"><i class="fa-solid fa-plus text-muted me-1"></i> <?php echo number_format($exp_dzd); ?> د.ج</div>
-        </div>
-    </div>
-    <!-- صافي الربح (الأهم) -->
-    <div class="col-xl-3 col-md-6">
-        <div class="admin-card card h-100 p-4 border-bottom border-4 border-primary" style="background: linear-gradient(135deg, #051024 0%, #1a3673 100%);">
-            <div class="d-flex justify-content-between align-items-center">
-                <div>
-                    <p class="text-white-50 fw-bold mb-1 small text-uppercase">صافي أرباح الأكاديمية</p>
-                    <h4 class="fw-black mb-0 text-warning"><?php echo number_format($net_profit_dzd); ?> د.ج</h4>
-                </div>
-                <div class="bg-white bg-opacity-10 text-white rounded-3 p-3 fs-3"><i class="fa-solid fa-crown"></i></div>
-            </div>
-        </div>
-    </div>
+<div class="row g-3 mb-4">
+  <div class="col-lg-8"><div class="dcard h-100"><div class="dcard-h"><?= e(d('الإيرادات وعدد الطلبات (6 أشهر)', 'Revenue & orders (6 months)')) ?></div><div class="dcard-b"><canvas id="chRev" height="110"></canvas></div></div></div>
+  <div class="col-lg-4"><div class="dcard h-100"><div class="dcard-h"><?= e(d('حالة الطلبات', 'Order status')) ?></div><div class="dcard-b"><canvas id="chStatus" height="220"></canvas></div></div></div>
+</div>
+<div class="row g-3 mb-4">
+  <div class="col-lg-4"><div class="dcard h-100"><div class="dcard-h"><?= e(d('نمو المتدربين', 'Trainee growth')) ?></div><div class="dcard-b"><canvas id="chUsers" height="200"></canvas></div></div></div>
+  <div class="col-lg-4"><div class="dcard h-100"><div class="dcard-h"><?= e(d('المتدربون حسب البلد', 'Trainees by country')) ?></div><div class="dcard-b"><canvas id="chCountry" height="200"></canvas></div></div></div>
+  <div class="col-lg-4"><div class="dcard h-100"><div class="dcard-h"><?= e(d('الدورات الأكثر طلبًا', 'Top courses')) ?></div><div class="dcard-b">
+    <?php if (!$topCourses): ?><div class="empty"><i class="fa-solid fa-chart-column"></i><?= e(d('لا بيانات بعد', 'No data yet')) ?></div><?php endif; ?>
+    <?php $max = max(1, (int)($topCourses[0]['n'] ?? 1)); foreach ($topCourses as $tc): ?>
+      <div class="mb-3"><div class="d-flex justify-content-between small fw-bold"><span><?= e($lang === 'ar' ? $tc['title_ar'] : ($tc['title_en'] ?: $tc['title_ar'])) ?></span><span><?= (int)$tc['n'] ?></span></div><div class="progress"><div class="progress-bar" style="width:<?= round($tc['n'] / $max * 100) ?>%"></div></div></div>
+    <?php endforeach; ?></div></div></div>
 </div>
 
-<h5 class="fw-bold mb-3 text-secondary"><i class="fa-solid fa-chart-pie me-2"></i> نشاط المنصة</h5>
-<div class="row g-4 mb-4">
-    <div class="col-md-4">
-        <div class="admin-card card h-100 p-4 d-flex flex-row align-items-center gap-4">
-            <div class="bg-primary bg-opacity-10 text-primary rounded-circle d-flex align-items-center justify-content-center" style="width: 70px; height: 70px; min-width: 70px;"><i class="fa-solid fa-user-graduate fs-2"></i></div>
-            <div><h3 class="fw-black mb-1 text-dark"><?php echo number_format($total_students); ?></h3><p class="text-muted fw-bold mb-0">طالب مسجل</p></div>
-        </div>
-    </div>
-    <div class="col-md-4">
-        <div class="admin-card card h-100 p-4 d-flex flex-row align-items-center gap-4">
-            <div class="bg-info bg-opacity-10 text-info rounded-circle d-flex align-items-center justify-content-center" style="width: 70px; height: 70px; min-width: 70px;"><i class="fa-solid fa-chalkboard-user fs-2"></i></div>
-            <div><h3 class="fw-black mb-1 text-dark"><?php echo number_format($total_trainers); ?></h3><p class="text-muted fw-bold mb-0">مدرب معتمد</p></div>
-        </div>
-    </div>
-    <div class="col-md-4">
-        <a href="courses.php" class="text-decoration-none">
-            <div class="admin-card card h-100 p-4 d-flex flex-row align-items-center gap-4 <?php echo ($pending_courses > 0) ? 'border border-warning' : ''; ?>">
-                <div class="bg-warning bg-opacity-10 text-warning rounded-circle d-flex align-items-center justify-content-center" style="width: 70px; height: 70px; min-width: 70px;"><i class="fa-solid fa-photo-film fs-2"></i></div>
-                <div>
-                    <h3 class="fw-black mb-1 <?php echo ($pending_courses > 0) ? 'text-warning' : 'text-dark'; ?>"><?php echo number_format($pending_courses); ?></h3>
-                    <p class="text-muted fw-bold mb-0">دورات بانتظار الموافقة</p>
-                </div>
-            </div>
-        </a>
-    </div>
+<div class="row g-3">
+  <div class="col-lg-7"><div class="dcard h-100"><div class="dcard-h"><?= e(d('آخر الطلبات', 'Recent orders')) ?><a class="btn-soft btn-soft-info" href="financial.php"><?= e(t('view_all')) ?></a></div><div class="table-wrap"><table class="dtable"><thead><tr><th><?= e(d('المتدرب', 'Trainee')) ?></th><th><?= e(d('الدورة', 'Course')) ?></th><th><?= e(d('المبلغ', 'Amount')) ?></th><th><?= e(t('status')) ?></th></tr></thead><tbody>
+    <?php foreach ($recent as $r): ?><tr><td class="fw-bold"><?= e($r['full_name']) ?></td><td><?= e($lang === 'ar' ? $r['title_ar'] : ($r['title_en'] ?: $r['title_ar'])) ?></td><td><?= $r['amount_usd'] > 0 ? e(money_usd($r['amount_usd'])) : e(money_dzd($r['amount_dzd'])) ?></td><td><?= status_badge($r['status']) ?></td></tr><?php endforeach; ?>
+    <?php if (!$recent): ?><tr><td colspan="4" class="empty"><?= e(d('لا طلبات', 'No orders')) ?></td></tr><?php endif; ?></tbody></table></div></div></div>
+  <div class="col-lg-5"><div class="dcard h-100"><div class="dcard-h"><span><i class="fa-solid fa-wand-magic-sparkles sparkle"></i> <?= e(d('تحليلات الذكاء الاصطناعي', 'AI insights')) ?></span>
+      <button class="ai-btn" id="insBtn"><?= e(d('حلّل أداء الأكاديمية', 'Analyse performance')) ?></button></div>
+    <div class="dcard-b"><div id="insOut" class="small" style="white-space:pre-wrap"><?= e(ai_available() ? d('اضغط للحصول على قراءة ذكية لبياناتك مع خطوات مقترحة.', 'Click to get a smart read of your data with suggested actions.') : d('فعّل مزوّد الذكاء الاصطناعي من الإعدادات > الذكاء الاصطناعي.', 'Enable an AI provider in Settings > AI.')) ?></div>
+      <div class="mt-3 small text-muted"><i class="fa-solid fa-bolt"></i> <?= e(d('استدعاءات AI آخر 30 يوم:', 'AI calls last 30 days:')) ?> <b><?= $aiCalls ?></b> · <i class="fa-solid fa-envelope"></i> <?= $newMsgs ?> <?= e(d('رسائل جديدة', 'new messages')) ?></div></div></div></div>
 </div>
-
-</div></div>
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-<script>
-    document.addEventListener("DOMContentLoaded", function() {
-        const sidebar = document.getElementById("sidebar");
-        const openBtn = document.getElementById("openSidebarBtn");
-        const overlay = document.getElementById("sidebarOverlay");
-        if(openBtn) {
-            openBtn.addEventListener("click", function() { sidebar.classList.add("active"); overlay.classList.add("active"); });
-            overlay.addEventListener("click", function() { sidebar.classList.remove("active"); overlay.classList.remove("active"); });
-        }
-    });
-</script>
-</body></html>
+<?php
+$footExtra = '<script>(function(){var L=' . json_encode($months) . ',txt=getComputedStyle(document.documentElement).getPropertyValue("--muted")||"#64708a";
+Chart.defaults.font.family="Cairo,Inter,sans-serif";Chart.defaults.color=txt.trim()||"#64708a";
+new Chart(chRev,{data:{labels:L,datasets:[{type:"bar",label:' . json_encode(d('الإيراد $', 'Revenue $')) . ',data:' . json_encode($revSeries) . ',backgroundColor:"rgba(28,200,138,.75)",borderRadius:8,yAxisID:"y"},{type:"line",label:' . json_encode(d('الطلبات', 'Orders')) . ',data:' . json_encode($ordSeries) . ',borderColor:"#4e73df",backgroundColor:"#4e73df",tension:.35,yAxisID:"y1"}]},options:{responsive:true,scales:{y:{beginAtZero:true},y1:{beginAtZero:true,position:"right",grid:{drawOnChartArea:false}}}}});
+new Chart(chStatus,{type:"doughnut",data:{labels:' . json_encode(array_map(fn($k) => trim(strip_tags(status_badge($k))), array_keys($statusRows)), JSON_UNESCAPED_UNICODE) . ',datasets:[{data:' . json_encode(array_map('intval', array_values($statusRows))) . ',backgroundColor:["#1cc88a","#f6c23e","#ef4444","#4e73df","#94a3b8"]}]},options:{plugins:{legend:{position:"bottom"}}}});
+new Chart(chUsers,{type:"line",data:{labels:L,datasets:[{label:' . json_encode(d('متدربون جدد', 'New trainees')) . ',data:' . json_encode($userSeries) . ',borderColor:"#7c5cff",backgroundColor:"rgba(124,92,255,.15)",fill:true,tension:.4}]},options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,ticks:{precision:0}}}}});
+new Chart(chCountry,{type:"bar",data:{labels:' . json_encode(array_column($countryRows, 'c'), JSON_UNESCAPED_UNICODE) . ',datasets:[{data:' . json_encode(array_map('intval', array_column($countryRows, 'n'))) . ',backgroundColor:"#13a1a6",borderRadius:8}]},options:{indexAxis:"y",plugins:{legend:{display:false}},scales:{x:{beginAtZero:true,ticks:{precision:0}}}}});
+document.getElementById("insBtn").addEventListener("click",function(){var o=document.getElementById("insOut");o.textContent=' . json_encode(t('loading')) . ';AI_ASK("../api/ai_tools.php",{action:"insights"},function(r){o.textContent=r.ok?r.text:(r.message||"error")},this)});})();</script>';
+require '../includes/partials/dash_footer.php';

@@ -1,239 +1,79 @@
 <?php
 require_once 'admin_init.php';
-$success_msg = ''; $error_msg = '';
+admin_only();
+$roles = ['admin' => d('مدير', 'Admin'), 'staff' => d('موظف', 'Staff'), 'trainer' => d('مدرب', 'Trainer'), 'trainee' => d('متدرب', 'Trainee')];
 
-// 1. معالجة حذف مستخدم (مع الحماية من حذف النفس)
-if (isset($_GET['delete'])) {
-    if ($_GET['delete'] != $_SESSION['user_id']) {
-        $pdo->prepare("DELETE FROM users WHERE id = ?")->execute([$_GET['delete']]);
-        $success_msg = "تم حذف المستخدم من النظام بنجاح.";
-    } else {
-        $error_msg = "لا يمكنك حذف حساب الإدارة الخاص بك!";
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    require_post_csrf();
+    $act = $_POST['act'] ?? ''; $id = (int)($_POST['id'] ?? 0);
+    if ($act === 'add') {
+        $name = trim((string)$_POST['full_name']); $email = trim((string)$_POST['email']); $pw = (string)$_POST['password']; $role = $_POST['role'] ?? 'trainee';
+        $dup = $pdo->prepare("SELECT id FROM users WHERE email=?"); $dup->execute([$email]);
+        if (!isset($roles[$role]) || $name === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) flash('err', t('err_required'));
+        elseif ($dup->fetch()) flash('err', t('err_exists'));
+        elseif (!strong_password($pw)) flash('err', t('err_weak_pw'));
+        else { $pdo->prepare("INSERT INTO users (full_name, email, password, role, is_verified) VALUES (?,?,?,?,1)")->execute([$name, $email, password_hash($pw, PASSWORD_DEFAULT), $role]); audit('user_add', "$email ($role)"); flash('ok', d('تمت إضافة المستخدم.', 'User added.')); }
+    } elseif ($act === 'edit') {
+        $role = $_POST['role'] ?? 'trainee';
+        if (!isset($roles[$role])) { flash('err', 'role'); }
+        elseif ($id === (int)$me['id'] && ($role !== 'admin' || (int)$_POST['status'] === 0)) flash('err', d('لا يمكنك تغيير صلاحية حسابك أو إيقافه.', 'You cannot demote or suspend your own account.'));
+        else { $pdo->prepare("UPDATE users SET full_name=?, role=?, status=? WHERE id=?")->execute([trim((string)$_POST['full_name']), $role, (int)(!empty($_POST['status'])), $id]); audit('user_edit', "id $id -> $role"); flash('ok', d('تم تحديث المستخدم.', 'User updated.')); }
+    } elseif ($act === 'delete') {
+        if ($id === (int)$me['id']) flash('err', d('لا يمكنك حذف حسابك!', 'You cannot delete your own account!'));
+        else { $pdo->prepare("DELETE FROM users WHERE id=?")->execute([$id]); audit('user_delete', "id $id"); flash('ok', d('تم حذف المستخدم.', 'User deleted.')); }
+    } elseif ($act === 'reset') {
+        $tmp = substr(bin2hex(random_bytes(6)), 0, 10) . 'A1';
+        $pdo->prepare("UPDATE users SET password=? WHERE id=?")->execute([password_hash($tmp, PASSWORD_DEFAULT), $id]);
+        audit('user_pw_reset', "id $id");
+        flash('warn', d('كلمة المرور المؤقتة (تظهر مرة واحدة): ', 'Temporary password (shown once): ') . $tmp);
     }
+    redirect('users.php?' . http_build_query(array_intersect_key($_GET, ['role' => 1, 'q' => 1])));
 }
 
-// 2. معالجة إضافة مستخدم جديد (مدرب أو موظف أو متدرب)
-if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['add_user'])) {
-    $name = trim($_POST['full_name']);
-    $email = trim($_POST['email']);
-    $password = $_POST['password'];
-    $role = $_POST['role'];
-    
-    // التأكد من عدم تكرار الإيميل
-    $check = $pdo->prepare("SELECT id FROM users WHERE email = ?");
-    $check->execute([$email]);
-    if ($check->rowCount() > 0) {
-        $error_msg = 'عذراً، هذا البريد الإلكتروني مسجل في النظام مسبقاً!';
-    } else {
-        $hashed_pass = password_hash($password, PASSWORD_DEFAULT);
-        // جعل الحساب موثقاً تلقائياً (is_verified = 1) لأن الأدمن هو من أضافه
-        $insert = $pdo->prepare("INSERT INTO users (full_name, email, password, role, is_verified) VALUES (?, ?, ?, ?, 1)");
-        if ($insert->execute([$name, $email, $hashed_pass, $role])) {
-            $success_msg = 'تمت إضافة المستخدم وتفعيله بنجاح!';
-        }
-    }
+$fRole = $_GET['role'] ?? ''; $fq = trim((string)($_GET['q'] ?? ''));
+$where = []; $par = [];
+if (isset($roles[$fRole])) { $where[] = 'role = ?'; $par[] = $fRole; }
+if ($fq !== '') { $where[] = '(full_name LIKE ? OR email LIKE ? OR phone LIKE ?)'; array_push($par, "%$fq%", "%$fq%", "%$fq%"); }
+$st = $pdo->prepare("SELECT * FROM users" . ($where ? ' WHERE ' . implode(' AND ', $where) : '') . " ORDER BY created_at DESC LIMIT 500"); $st->execute($par);
+$users = $st->fetchAll();
+
+if (($_GET['export'] ?? '') === 'csv') {
+    header('Content-Type: text/csv; charset=utf-8'); header('Content-Disposition: attachment; filename="users.csv"');
+    $o = fopen('php://output', 'w'); fwrite($o, "\xEF\xBB\xBF"); fputcsv($o, ['id', 'name', 'last_name', 'email', 'phone', 'whatsapp', 'country', 'role', 'status', 'created_at']);
+    foreach ($users as $u) fputcsv($o, [$u['id'], $u['full_name'], $u['last_name'], $u['email'], $u['phone'], $u['whatsapp_number'], $u['country'], $u['role'], $u['status'], $u['created_at']]);
+    exit;
 }
-
-// 3. معالجة تعديل مستخدم موجود (الاسم، الصلاحية، الحالة)
-if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['edit_user'])) {
-    $id = $_POST['user_id'];
-    $name = trim($_POST['full_name']);
-    $role = $_POST['role'];
-    $status = $_POST['status']; // 1 نشط، 0 محظور
-    
-    $update = $pdo->prepare("UPDATE users SET full_name = ?, role = ?, status = ? WHERE id = ?");
-    if ($update->execute([$name, $role, $status, $id])) {
-        $success_msg = 'تم تحديث بيانات المستخدم بنجاح!';
-    }
-}
-
-// جلب جميع المستخدمين (الأحدث أولاً)
-$users = $pdo->query("SELECT * FROM users ORDER BY created_at DESC")->fetchAll();
-
-require_once 'includes/header.php';
+$dashTitle = d('المستخدمون والصلاحيات', 'Users & roles');
+require '../includes/partials/dash_header.php';
 ?>
+<div class="d-flex flex-wrap gap-2 justify-content-between align-items-center mb-3">
+  <form class="d-flex gap-2 flex-wrap" method="get"><input name="q" value="<?= e($fq) ?>" class="form-control" placeholder="<?= e(t('search')) ?>..." style="min-width:220px"><select name="role" class="form-select" style="width:auto" onchange="this.form.submit()"><option value=""><?= e(t('all')) ?></option>
+    <?php foreach ($roles as $k => $v): ?><option value="<?= $k ?>" <?= $fRole === $k ? 'selected' : '' ?>><?= e($v) ?></option><?php endforeach; ?></select><button class="btn-soft btn-soft-info"><i class="fa-solid fa-magnifying-glass"></i></button></form>
+  <div class="d-flex gap-2"><a class="btn-soft btn-soft-ok py-2" href="?<?= e(http_build_query(array_merge($_GET, ['export' => 'csv']))) ?>"><i class="fa-solid fa-file-csv"></i> CSV</a>
+    <button class="btn-aramio" data-bs-toggle="modal" data-bs-target="#addModal"><i class="fa-solid fa-user-plus"></i> <?= e(d('مستخدم جديد', 'New user')) ?></button></div></div>
+<div class="dcard"><div class="table-wrap"><table class="dtable"><thead><tr><th><?= e(t('name')) ?></th><th><?= e(t('email')) ?></th><th><?= e(t('country')) ?></th><th><?= e(d('الصلاحية', 'Role')) ?></th><th><?= e(t('status')) ?></th><th><?= e(d('انضم', 'Joined')) ?></th><th></th></tr></thead><tbody>
+<?php foreach ($users as $u): ?><tr>
+  <td><div class="d-flex align-items-center gap-2"><img src="<?= e(avatar_url($u['avatar'], $u['full_name'], '../')) ?>" width="38" height="38" class="rounded-circle" style="object-fit:cover" alt=""><b><?= e(trim($u['full_name'] . ' ' . $u['last_name'])) ?></b></div></td>
+  <td dir="ltr" class="text-start small"><?= e($u['email']) ?><?= $u['whatsapp_number'] ? '<br><a target="_blank" href="' . e(wa_link($u['whatsapp_number'])) . '"><i class="fa-brands fa-whatsapp"></i> ' . e($u['whatsapp_number']) . '</a>' : '' ?></td>
+  <td><?= e(country_flag((string)$u['country'])) ?> <?= e($u['country']) ?></td><td><span class="st st-info"><?= e($roles[$u['role']] ?? $u['role']) ?></span></td>
+  <td><?= $u['status'] ? '<span class="st st-ok">' . e(d('نشط', 'Active')) . '</span>' : '<span class="st st-bad">' . e(d('موقوف', 'Suspended')) . '</span>' ?><?= !$u['is_verified'] ? ' <span class="st st-warn">' . e(d('غير موثق', 'Unverified')) . '</span>' : '' ?></td>
+  <td class="small text-muted"><?= e(substr($u['created_at'], 0, 10)) ?></td>
+  <td class="text-end text-nowrap"><button class="btn-soft btn-soft-info" data-bs-toggle="modal" data-bs-target="#editModal" data-id="<?= (int)$u['id'] ?>" data-name="<?= e($u['full_name']) ?>" data-role="<?= e($u['role']) ?>" data-st="<?= (int)$u['status'] ?>"><i class="fa-solid fa-pen"></i></button>
+    <?= action_btn('', ['act' => 'reset', 'id' => $u['id']], 'btn-soft-warn', d('توليد كلمة مرور مؤقتة لهذا المستخدم؟', 'Generate a temporary password?'), 'fa-key') ?>
+    <?php if ((int)$u['id'] !== (int)$me['id']) echo action_btn('', ['act' => 'delete', 'id' => $u['id']], 'btn-soft-bad', d('حذف نهائي؟ لا يمكن التراجع.', 'Delete permanently?'), 'fa-trash'); ?></td></tr><?php endforeach; ?>
+<?php if (!$users): ?><tr><td colspan="7" class="empty"><i class="fa-solid fa-users"></i><?= e(d('لا نتائج', 'No results')) ?></td></tr><?php endif; ?>
+</tbody></table></div></div>
 
-<div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-3">
-    <h3 class="fw-bold text-dark"><i class="fa-solid fa-users-gear text-primary me-2"></i> إدارة المستخدمين والصلاحيات</h3>
-    <button class="btn btn-success rounded-pill fw-bold px-4 shadow-sm" data-bs-toggle="modal" data-bs-target="#addUserModal">
-        <i class="fa-solid fa-user-plus me-2"></i> إضافة مستخدم جديد
-    </button>
-</div>
-
-<?php if($success_msg): ?> <div class="alert alert-success rounded-pill fw-bold shadow-sm"><i class="fa-solid fa-check-circle"></i> <?php echo $success_msg; ?></div> <?php endif; ?>
-<?php if($error_msg): ?> <div class="alert alert-danger rounded-pill fw-bold shadow-sm"><i class="fa-solid fa-triangle-exclamation"></i> <?php echo $error_msg; ?></div> <?php endif; ?>
-
-<div class="admin-card card p-0 overflow-hidden mb-5">
-    <div class="card-header bg-white py-3 border-0 d-flex justify-content-between align-items-center">
-        <h5 class="m-0 fw-bold text-dark"><i class="fa-solid fa-address-book text-muted me-2"></i> قاعدة بيانات المستخدمين</h5>
-        <span class="badge bg-light text-dark border px-3 py-2 fw-bold"><?php echo count($users); ?> مستخدم</span>
-    </div>
-    <div class="table-responsive">
-        <table class="table table-hover align-middle text-center mb-0">
-            <thead class="table-light text-muted small fw-bold text-uppercase">
-                <tr>
-                    <th class="py-3 text-start ps-4">الاسم الكامل / البريد</th>
-                    <th class="py-3">الصلاحية (الرتبة)</th>
-                    <th class="py-3">الحالة (نشط/محظور)</th>
-                    <th class="py-3">تاريخ الانضمام</th>
-                    <th class="py-3">الإجراءات</th>
-                </tr>
-            </thead>
-            <tbody>
-                <?php foreach($users as $u): ?>
-                <tr class="<?php echo ($u['status'] == 0) ? 'table-danger table-opacity-10' : ''; ?>">
-                    <td class="text-start ps-4">
-                        <strong class="text-dark"><i class="fa-solid fa-user-circle text-primary opacity-50 me-1"></i> <?php echo htmlspecialchars($u['full_name']); ?></strong><br>
-                        <small class="text-muted fw-bold" dir="ltr"><?php echo htmlspecialchars($u['email']); ?></small>
-                    </td>
-                    
-                    <td class="fw-bold">
-                        <?php 
-                            if($u['role'] == 'admin') echo '<span class="badge bg-danger rounded-pill px-3 shadow-sm"><i class="fa-solid fa-crown me-1"></i> مدير عام</span>';
-                            elseif($u['role'] == 'staff') echo '<span class="badge bg-secondary rounded-pill px-3 shadow-sm">موظف</span>';
-                            elseif($u['role'] == 'trainer') echo '<span class="badge bg-primary rounded-pill px-3 shadow-sm"><i class="fa-solid fa-chalkboard-user me-1"></i> مدرب</span>';
-                            else echo '<span class="badge bg-light text-dark border rounded-pill px-3"><i class="fa-solid fa-user-graduate me-1"></i> متدرب</span>'; 
-                        ?>
-                    </td>
-                    
-                    <td>
-                        <?php if($u['status'] == 1): ?>
-                            <span class="text-success fw-bold small"><i class="fa-solid fa-circle-check"></i> نشط</span>
-                        <?php else: ?>
-                            <span class="text-danger fw-bold small"><i class="fa-solid fa-ban"></i> محظور</span>
-                        <?php endif; ?>
-                    </td>
-                    
-                    <td class="text-muted small fw-bold">
-                        <?php echo date('Y-m-d', strtotime($u['created_at'])); ?>
-                    </td>
-                    
-                    <td>
-                        <!-- زر التعديل يفتح النافذة ويمرر البيانات الحالية للمستخدم -->
-                        <button class="btn btn-sm btn-outline-primary rounded-pill px-3 fw-bold me-1 shadow-sm" title="تعديل البيانات" 
-                                onclick="openEditModal(<?php echo $u['id']; ?>, '<?php echo addslashes($u['full_name']); ?>', '<?php echo $u['role']; ?>', <?php echo $u['status']; ?>)">
-                            <i class="fa-solid fa-pen"></i> تعديل
-                        </button>
-                        
-                        <?php if($u['id'] != $_SESSION['user_id']): ?>
-                            <!-- زر الحذف يظهر للجميع ما عدا حساب الأدمن الحالي -->
-                            <a href="?delete=<?php echo $u['id']; ?>" class="btn btn-sm btn-danger rounded-circle shadow-sm" onclick="return confirm('تأكيد حذف هذا المستخدم نهائياً؟')" title="حذف المستخدم"><i class="fa-solid fa-trash"></i></a>
-                        <?php else: ?>
-                            <!-- قفل لحماية حساب الإدارة -->
-                            <span class="text-muted small ms-2 opacity-50" title="لا يمكنك حذف حسابك"><i class="fa-solid fa-lock"></i></span>
-                        <?php endif; ?>
-                    </td>
-                </tr>
-                <?php endforeach; ?>
-            </tbody>
-        </table>
-    </div>
-</div>
-
-<!-- النافذة المنبثقة 1: إضافة مستخدم جديد -->
-<div class="modal fade" id="addUserModal" tabindex="-1">
-  <div class="modal-dialog modal-dialog-centered">
-    <div class="modal-content border-0 shadow-lg rounded-4">
-      <div class="modal-header bg-success text-white border-0 rounded-top-4">
-        <h5 class="modal-title fw-bold"><i class="fa-solid fa-user-plus me-2"></i> إضافة مستخدم جديد للمنصة</h5>
-        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-      </div>
-      <form method="POST">
-          <div class="modal-body p-4">
-              <div class="mb-3">
-                  <label class="form-label text-muted small fw-bold">الاسم الكامل <span class="text-danger">*</span></label>
-                  <input type="text" name="full_name" class="form-control fw-bold" required>
-              </div>
-              <div class="mb-3">
-                  <label class="form-label text-muted small fw-bold">البريد الإلكتروني <span class="text-danger">*</span></label>
-                  <input type="email" name="email" class="form-control fw-bold text-start" dir="ltr" required>
-              </div>
-              <div class="row mb-4">
-                  <div class="col-md-6">
-                      <label class="form-label text-muted small fw-bold">الرقم السري الافتراضي <span class="text-danger">*</span></label>
-                      <input type="text" name="password" class="form-control text-center fw-bold text-primary" value="123456" required>
-                      <small class="text-muted d-block mt-1" style="font-size: 0.7rem;">يمكنه تغييره لاحقاً.</small>
-                  </div>
-                  <div class="col-md-6 mt-3 mt-md-0">
-                      <label class="form-label text-muted small fw-bold">الصلاحية (الرتبة) <span class="text-danger">*</span></label>
-                      <select name="role" class="form-select fw-bold text-success" required>
-                          <option value="trainer">مدرب (Trainer)</option>
-                          <option value="admin">مدير عام (Admin)</option>
-                          <option value="staff">موظف (Staff)</option>
-                          <option value="trainee">متدرب (Trainee)</option>
-                      </select>
-                  </div>
-              </div>
-          </div>
-          <div class="modal-footer border-0 bg-light rounded-bottom-4">
-              <button type="button" class="btn btn-secondary rounded-pill px-4" data-bs-dismiss="modal">إلغاء</button>
-              <button type="submit" name="add_user" class="btn btn-success rounded-pill px-4 fw-bold shadow-sm">حفظ وإضافة للمنصة</button>
-          </div>
-      </form>
-    </div>
-  </div>
-</div>
-
-<!-- النافذة المنبثقة 2: تعديل بيانات وصلاحيات مستخدم (تظهر بالـ JS) -->
-<div class="modal fade" id="editUserModal" tabindex="-1">
-  <div class="modal-dialog modal-dialog-centered">
-    <div class="modal-content border-0 shadow-lg rounded-4">
-      <div class="modal-header bg-primary text-white border-0 rounded-top-4">
-        <h5 class="modal-title fw-bold"><i class="fa-solid fa-pen-to-square me-2"></i> تعديل بيانات المستخدم</h5>
-        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-      </div>
-      <form method="POST">
-          <div class="modal-body p-4">
-              <input type="hidden" name="user_id" id="edit_id">
-              
-              <div class="mb-4">
-                  <label class="form-label text-muted small fw-bold">الاسم الكامل</label>
-                  <input type="text" name="full_name" id="edit_name" class="form-control fw-bold" required>
-              </div>
-              
-              <div class="row mb-3 bg-light p-3 rounded-3 border">
-                  <p class="fw-bold text-primary small mb-2"><i class="fa-solid fa-shield-halved"></i> منطقة التحكم الإداري</p>
-                  <div class="col-6">
-                      <label class="form-label text-muted small fw-bold">تغيير الصلاحية</label>
-                      <select name="role" id="edit_role" class="form-select fw-bold text-primary" required>
-                          <option value="trainer">مدرب</option>
-                          <option value="admin">مدير</option>
-                          <option value="staff">موظف</option>
-                          <option value="trainee">متدرب</option>
-                      </select>
-                  </div>
-                  <div class="col-6">
-                      <label class="form-label text-muted small fw-bold">تغيير حالة الحساب</label>
-                      <select name="status" id="edit_status" class="form-select fw-bold text-danger" required>
-                          <option value="1">حساب نشط (مسموح بالدخول)</option>
-                          <option value="0">حساب محظور (Banned)</option>
-                      </select>
-                  </div>
-              </div>
-              <small class="text-muted fw-bold d-block text-center"><i class="fa-solid fa-circle-info text-info"></i> حظر الحساب يمنع المستخدم من الدخول للمنصة نهائياً.</small>
-          </div>
-          <div class="modal-footer border-0 bg-light rounded-bottom-4">
-              <button type="submit" name="edit_user" class="btn btn-primary w-100 rounded-pill fw-bold shadow-sm" style="background-color: #051024; border:none;">تحديث وحفظ البيانات</button>
-          </div>
-      </form>
-    </div>
-  </div>
-</div>
-
-</div></div>
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-<script>
-    // الجافاسكربت الذكي لتمرير بيانات المستخدم للنافذة المنبثقة
-    function openEditModal(id, name, role, status) { 
-        document.getElementById('edit_id').value = id; 
-        document.getElementById('edit_name').value = name; 
-        document.getElementById('edit_role').value = role; 
-        document.getElementById('edit_status').value = status; 
-        new bootstrap.Modal(document.getElementById('editUserModal')).show(); 
-    } 
-    
-    // تفعيل القائمة الجانبية للموبايل
-    document.getElementById("openSidebarBtn").addEventListener("click", () => { document.getElementById("sidebar").classList.add("active"); document.getElementById("sidebarOverlay").classList.add("active"); }); 
-    document.getElementById("sidebarOverlay").addEventListener("click", () => { document.getElementById("sidebar").classList.remove("active"); document.getElementById("sidebarOverlay").classList.remove("active"); });
-</script>
-</body></html>
+<div class="modal fade" id="addModal" tabindex="-1"><div class="modal-dialog modal-dialog-centered"><form method="post" class="modal-content"><?= csrf_field() ?><input type="hidden" name="act" value="add">
+  <div class="modal-header"><h5 class="modal-title fw-bold"><?= e(d('إضافة مستخدم', 'Add user')) ?></h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+  <div class="modal-body d-grid gap-3"><input name="full_name" class="form-control" required placeholder="<?= e(t('name')) ?>"><input type="email" name="email" class="form-control" dir="ltr" required placeholder="<?= e(t('email')) ?>">
+    <input type="text" name="password" class="form-control" dir="ltr" required minlength="8" placeholder="<?= e(t('password')) ?>"><select name="role" class="form-select"><?php foreach ($roles as $k => $v): ?><option value="<?= $k ?>" <?= $k === 'trainer' ? 'selected' : '' ?>><?= e($v) ?></option><?php endforeach; ?></select></div>
+  <div class="modal-footer border-0"><button class="btn-aramio w-100"><?= e(t('save')) ?></button></div></form></div></div>
+<div class="modal fade" id="editModal" tabindex="-1"><div class="modal-dialog modal-dialog-centered"><form method="post" class="modal-content"><?= csrf_field() ?><input type="hidden" name="act" value="edit"><input type="hidden" name="id" id="eId">
+  <div class="modal-header"><h5 class="modal-title fw-bold"><?= e(t('edit')) ?></h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+  <div class="modal-body d-grid gap-3"><input name="full_name" id="eName" class="form-control" required><select name="role" id="eRole" class="form-select"><?php foreach ($roles as $k => $v): ?><option value="<?= $k ?>"><?= e($v) ?></option><?php endforeach; ?></select>
+    <select name="status" id="eSt" class="form-select"><option value="1"><?= e(d('نشط', 'Active')) ?></option><option value="0"><?= e(d('موقوف', 'Suspended')) ?></option></select></div>
+  <div class="modal-footer border-0"><button class="btn-aramio w-100"><?= e(t('save')) ?></button></div></form></div></div>
+<?php
+$footExtra = '<script>editModal.addEventListener("show.bs.modal",function(e){var b=e.relatedTarget;eId.value=b.dataset.id;eName.value=b.dataset.name;eRole.value=b.dataset.role;eSt.value=b.dataset.st});</script>';
+require '../includes/partials/dash_footer.php';

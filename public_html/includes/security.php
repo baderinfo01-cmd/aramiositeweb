@@ -1,6 +1,10 @@
 <?php
 /** طبقة الأمان: جلسات، CSRF، ترويسات، تحديد معدل الطلبات، رفع الملفات، أدوات مساعدة */
 
+/* توافق مع PHP 7.4 */
+if (!function_exists('str_contains')) { function str_contains(string $h, string $n): bool { return $n === '' || strpos($h, $n) !== false; } }
+if (!function_exists('str_starts_with')) { function str_starts_with(string $h, string $n): bool { return strncmp($h, $n, strlen($n)) === 0; } }
+
 function e($v): string { return htmlspecialchars((string)$v, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); }
 
 function is_https(): bool {

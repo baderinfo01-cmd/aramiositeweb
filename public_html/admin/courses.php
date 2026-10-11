@@ -1,76 +1,64 @@
 <?php
 require_once 'admin_init.php';
-$success_msg = ''; $error_msg = '';
-$whatsapp_btn = ''; // 💡 متغير زر الواتساب
-
-// 1. الموافقة ونشر الدورة
-if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['publish_course'])) {
-    $course_id = $_POST['course_id'];
-    $c_type_usd = !empty($_POST['comm_type_usd']) ? $_POST['comm_type_usd'] : null;
-    $c_val_usd = !empty($_POST['comm_value_usd']) ? $_POST['comm_value_usd'] : null;
-    $c_type_dzd = !empty($_POST['comm_type_dzd']) ? $_POST['comm_type_dzd'] : null;
-    $c_val_dzd = !empty($_POST['comm_value_dzd']) ? $_POST['comm_value_dzd'] : null;
-    
-    $update = $pdo->prepare("UPDATE courses SET commission_type_usd = ?, commission_value_usd = ?, commission_type_dzd = ?, commission_value_dzd = ?, status = 'published' WHERE id = ?");
-    if ($update->execute([$c_type_usd, $c_val_usd, $c_type_dzd, $c_val_dzd, $course_id])) {
-        $success_msg = "تمت الموافقة وتحديد العمولات ونشر الدورة بنجاح!";
-        
-        // 💡 سحر الواتساب: إرسال تهنئة للمدرب
-        $get_trainer = $pdo->prepare("SELECT u.full_name, u.whatsapp_number, c.title_ar FROM courses c JOIN users u ON c.trainer_id = u.id WHERE c.id = ?");
-        $get_trainer->execute([$course_id]);
-        $trainer_info = $get_trainer->fetch();
-
-        if ($trainer_info && !empty($trainer_info['whatsapp_number'])) {
-            $wa_num = preg_replace('/[^0-9]/', '', $trainer_info['whatsapp_number']);
-            $wa_msg = "مرحباً كوتش *" . $trainer_info['full_name'] . "* 🌟\n\nيسعدنا إخبارك أنه تمت *الموافقة* على دورتك التدريبية:\n📖 *" . $trainer_info['title_ar'] . "*\n\nالدورة الآن منشورة ومتاحة للجمهور في منصة أراميو سمارت العالمية. نتمنى لك التوفيق والمبيعات العالية! 🚀";
-            $wa_link = "https://wa.me/" . $wa_num . "?text=" . urlencode($wa_msg);
-            $whatsapp_btn = "<a href='$wa_link' target='_blank' class='btn btn-success fw-bold rounded-pill px-4 mt-3 shadow-sm pulse-button'><i class='fa-brands fa-whatsapp fs-5 me-2'></i> أرسل التهنئة للمدرب (واتساب)</a>";
-        }
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    require_post_csrf();
+    $act = $_POST['act'] ?? ''; $cid = (int)($_POST['course_id'] ?? 0);
+    $st = $pdo->prepare("SELECT c.*, u.full_name AS trainer_name, u.whatsapp_number AS trainer_wa, u.id AS tid FROM courses c JOIN users u ON u.id=c.trainer_id WHERE c.id=?"); $st->execute([$cid]); $c = $st->fetch();
+    if ($c) {
+        if ($act === 'publish') {
+            $ct = fn($k) => in_array($_POST[$k] ?? '', ['percentage', 'fixed'], true) ? $_POST[$k] : null;
+            $cv = fn($k) => (isset($_POST[$k]) && $_POST[$k] !== '' && is_numeric($_POST[$k])) ? (float)$_POST[$k] : null;
+            $pdo->prepare("UPDATE courses SET commission_type_usd=?, commission_value_usd=?, commission_type_dzd=?, commission_value_dzd=?, status='published' WHERE id=?")
+                ->execute([$ct('comm_type_usd'), $cv('comm_value_usd'), $ct('comm_type_dzd'), $cv('comm_value_dzd'), $cid]);
+            notify_user((int)$c['tid'], d('تمت الموافقة على دورتك', 'Your course was approved'), $c['title_ar'], 'my_courses.php');
+            $tpl = getSetting($pdo, 'msg_course_approved', 'ar');
+            wa_queue(d('تهنئة المدرب', 'Congratulate trainer'), wa_link($c['trainer_wa'], "مرحباً كوتش *{$c['trainer_name']}* 🌟\n\n" . ($tpl ? $tpl . "\n\n" : '') . "📖 *{$c['title_ar']}*\n\nالدورة الآن منشورة في منصة أراميو."));
+            audit('course_publish', (string)$cid); flash('ok', d('تمت الموافقة ونشر الدورة.', 'Course approved and published.'));
+        } elseif ($act === 'reject') { $pdo->prepare("UPDATE courses SET status='rejected' WHERE id=?")->execute([$cid]); notify_user((int)$c['tid'], d('تم رفض دورتك', 'Your course was rejected'), $c['title_ar'], 'my_courses.php'); audit('course_reject', (string)$cid); flash('ok', d('تم رفض الدورة.', 'Course rejected.')); }
+        elseif ($act === 'unpublish') { $pdo->prepare("UPDATE courses SET status='draft' WHERE id=?")->execute([$cid]); flash('ok', d('أُعيدت الدورة إلى مسودة.', 'Course moved to draft.')); }
+        elseif ($act === 'delete') { admin_only(); $pdo->prepare("DELETE FROM courses WHERE id=?")->execute([$cid]); audit('course_delete', (string)$cid); flash('ok', d('تم حذف الدورة نهائيًا.', 'Course deleted.')); }
     }
+    redirect('courses.php?' . http_build_query(array_intersect_key($_GET, ['s' => 1])));
 }
-
-// 2. رفض أو حذف الدورة
-if (isset($_GET['action']) && $_GET['action'] == 'reject') { $pdo->prepare("UPDATE courses SET status = 'rejected' WHERE id = ?")->execute([$_GET['id']]); $success_msg = "تم رفض الدورة."; }
-if (isset($_GET['action']) && $_GET['action'] == 'delete') { $pdo->prepare("DELETE FROM courses WHERE id = ?")->execute([$_GET['id']]); $success_msg = "تم حذف الدورة نهائياً."; }
-
-$courses = $pdo->query("SELECT c.*, u.full_name AS trainer_name, cat.name_ar AS category_name FROM courses c JOIN users u ON c.trainer_id = u.id JOIN categories cat ON c.category_id = cat.id ORDER BY c.created_at DESC")->fetchAll();
-require_once 'includes/header.php';
+$f = $_GET['s'] ?? '';
+$counts = $pdo->query("SELECT status, COUNT(*) n FROM courses GROUP BY status")->fetchAll(PDO::FETCH_KEY_PAIR);
+$sql = "SELECT c.*, u.full_name AS trainer_name, cat.name_ar AS cat_name FROM courses c JOIN users u ON c.trainer_id=u.id JOIN categories cat ON c.category_id=cat.id";
+$par = []; if (in_array($f, ['draft', 'pending', 'published', 'rejected'], true)) { $sql .= " WHERE c.status=?"; $par[] = $f; }
+$st = $pdo->prepare($sql . " ORDER BY FIELD(c.status,'pending','published','draft','rejected'), c.created_at DESC"); $st->execute($par); $courses = $st->fetchAll();
+$dashTitle = d('إدارة الدورات', 'Course management');
+require '../includes/partials/dash_header.php';
+echo wa_render();
 ?>
-<style>
-    @keyframes pulse { 0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(37, 211, 102, 0.7); } 70% { transform: scale(1.05); box-shadow: 0 0 0 10px rgba(37, 211, 102, 0); } 100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(37, 211, 102, 0); } }
-    .pulse-button { animation: pulse 2s infinite; background-color: #25d366 !important; border-color: #25d366 !important; color: white !important; }
-</style>
-
-<div class="d-flex justify-content-between align-items-center mb-4"><h3 class="fw-bold text-dark"><i class="fa-solid fa-photo-film text-primary me-2"></i> إدارة الدورات والمحتوى</h3></div>
-
-<?php if($success_msg): ?> 
-    <div class="alert alert-success rounded-4 fw-bold shadow-sm border-0 text-center p-4 mb-4">
-        <i class="fa-solid fa-check-circle fa-3x mb-3 text-success"></i><br>
-        <span class="fs-5 text-dark"><?php echo $success_msg; ?></span><br>
-        <?php echo $whatsapp_btn; ?>
-    </div>
-<?php endif; ?>
-
-<div class="admin-card card p-0 overflow-hidden mb-5"><div class="table-responsive"><table class="table table-hover align-middle text-center mb-0"><thead class="table-light text-muted small fw-bold"><tr><th class="py-3 text-start ps-4">الدورة / القسم</th><th class="py-3">المدرب</th><th class="py-3">السعر المقترح</th><th class="py-3">العمولة</th><th class="py-3">الحالة</th><th class="py-3">إجراءات</th></tr></thead><tbody>
-    <?php foreach($courses as $course): ?><tr>
-        <td class="text-start ps-4 fw-bold text-dark"><?php echo htmlspecialchars($course['title_ar']); ?><br><span class="badge bg-light text-secondary border mt-1"><?php echo htmlspecialchars($course['category_name']); ?></span></td>
-        <td class="fw-bold text-muted"><i class="fa-solid fa-user-tie text-primary opacity-50 me-1"></i> <?php echo htmlspecialchars($course['trainer_name']); ?></td>
-        <td class="fw-bold text-success fs-6"><?php if($course['price_usd']) echo '$'.$course['price_usd'].'<br>'; if($course['price_dzd']) echo number_format($course['price_dzd']).' د.ج'; ?></td>
-        <td class="fw-bold small text-primary"><?php if($course['status'] == 'pending') echo '<span class="text-muted opacity-50">لم تحدد</span>'; else { if($course['commission_type_usd']) echo ($course['commission_type_usd'] == 'percentage') ? $course['commission_value_usd'].'% ($)<br>' : '$'.$course['commission_value_usd'].'<br>'; if($course['commission_type_dzd']) echo ($course['commission_type_dzd'] == 'percentage') ? $course['commission_value_dzd'].'% (د.ج)' : $course['commission_value_dzd'].' د.ج'; } ?></td>
-        <td><?php if($course['status'] == 'published') echo '<span class="badge bg-success rounded-pill px-3 py-2">منشورة</span>'; elseif($course['status'] == 'pending') echo '<span class="badge bg-warning text-dark rounded-pill px-3 py-2">بانتظار الموافقة</span>'; else echo '<span class="badge bg-danger rounded-pill px-3 py-2">مرفوضة</span>'; ?></td>
-        <td>
-            <?php if($course['status'] == 'pending'): ?>
-                <button class="btn btn-sm btn-success rounded-pill fw-bold px-3 shadow-sm mb-1 d-block mx-auto" onclick="openPublishModal(<?php echo $course['id']; ?>, '<?php echo addslashes($course['title_ar']); ?>', '<?php echo $course['price_usd']; ?>', '<?php echo $course['price_dzd']; ?>')">مراجعة ونشر</button>
-                <a href="?action=reject&id=<?php echo $course['id']; ?>" class="btn btn-sm btn-warning text-dark rounded-circle me-1" title="رفض الدورة"><i class="fa-solid fa-xmark"></i></a>
-            <?php else: ?><span class="text-muted small opacity-50 d-block mb-1"><i class="fa-solid fa-lock"></i> تم الإجراء</span><?php endif; ?>
-            <a href="?action=delete&id=<?php echo $course['id']; ?>" class="btn btn-sm btn-danger rounded-circle" onclick="return confirm('حذف نهائي؟')"><i class="fa-solid fa-trash"></i></a>
-        </td>
-    </tr><?php endforeach; ?>
+<ul class="nav nav-pills mb-3 gap-1">
+  <?php foreach (['' => t('all'), 'pending' => d('بانتظار الموافقة', 'Pending'), 'published' => d('منشورة', 'Published'), 'draft' => d('مسودات', 'Drafts'), 'rejected' => d('مرفوضة', 'Rejected')] as $k => $lb): ?>
+    <li class="nav-item"><a class="nav-link <?= $f === $k ? 'active' : '' ?>" style="<?= $f === $k ? 'background:var(--emerald)' : 'color:var(--text)' ?>" href="?s=<?= $k ?>"><?= e($lb) ?> <span class="badge bg-secondary bg-opacity-25 text-reset"><?= $k === '' ? array_sum($counts) : (int)($counts[$k] ?? 0) ?></span></a></li>
+  <?php endforeach; ?></ul>
+<div class="dcard"><div class="table-wrap"><table class="dtable"><thead><tr><th><?= e(d('الدورة', 'Course')) ?></th><th><?= e(d('المدرب', 'Trainer')) ?></th><th><?= e(t('price')) ?></th><th><?= e(d('العمولة', 'Commission')) ?></th><th><?= e(t('status')) ?></th><th></th></tr></thead><tbody>
+<?php foreach ($courses as $c): ?><tr>
+  <td><a href="../course.php?id=<?= (int)$c['id'] ?>" target="_blank" class="fw-bold text-reset"><?= e($c['title_ar']) ?></a><div class="small text-muted"><?= e($c['title_en']) ?></div><span class="st st-mute"><?= e($c['cat_name']) ?></span> <span class="st st-info"><?= e(type_label($c['training_type'])) ?></span></td>
+  <td><?= e($c['trainer_name']) ?></td>
+  <td class="fw-bold"><?= $c['price_usd'] > 0 ? e(money_usd($c['price_usd'])) . '<br>' : '' ?><?= $c['price_dzd'] > 0 ? e(money_dzd($c['price_dzd'])) : '' ?></td>
+  <td class="small"><?php foreach (['usd' => '$', 'dzd' => 'DZD'] as $cur => $sym) if ($c["commission_type_$cur"]) echo e($c["commission_value_$cur"] . ($c["commission_type_$cur"] === 'percentage' ? '%' : " $sym")) . " ($sym)<br>"; ?></td>
+  <td><?= status_badge($c['status']) ?></td>
+  <td class="text-end text-nowrap">
+    <?php if ($c['status'] === 'pending'): ?><button class="btn-soft btn-soft-ok" data-bs-toggle="modal" data-bs-target="#pubModal" data-id="<?= (int)$c['id'] ?>" data-title="<?= e($c['title_ar']) ?>" data-usd="<?= e($c['price_usd']) ?>" data-dzd="<?= e($c['price_dzd']) ?>"><i class="fa-solid fa-check"></i> <?= e(d('مراجعة ونشر', 'Review & publish')) ?></button>
+      <?= action_btn('', ['act' => 'reject', 'course_id' => $c['id']], 'btn-soft-warn', d('رفض هذه الدورة؟', 'Reject this course?'), 'fa-xmark') ?><?php endif; ?>
+    <?php if ($c['status'] === 'published'): ?><button class="btn-soft btn-soft-info ai-tr" data-id="<?= (int)$c['id'] ?>" title="<?= e(d('ترجمة تلقائية للغات الأخرى', 'AI-translate to other languages')) ?>"><i class="fa-solid fa-language"></i> AI</button>
+      <?= action_btn('', ['act' => 'unpublish', 'course_id' => $c['id']], 'btn-soft-warn', d('إلغاء النشر؟', 'Unpublish?'), 'fa-eye-slash') ?><?php endif; ?>
+    <?php if ($isSuperAdmin) echo action_btn('', ['act' => 'delete', 'course_id' => $c['id']], 'btn-soft-bad', d('حذف نهائي؟ سيتم حذف الدروس والبيانات المرتبطة.', 'Delete permanently?'), 'fa-trash'); ?></td></tr><?php endforeach; ?>
+<?php if (!$courses): ?><tr><td colspan="6" class="empty"><i class="fa-solid fa-photo-film"></i><?= e(t('no_courses')) ?></td></tr><?php endif; ?>
 </tbody></table></div></div>
 
-<div class="modal fade" id="publishModal" tabindex="-1"><div class="modal-dialog modal-lg modal-dialog-centered"><div class="modal-content border-0 shadow-lg rounded-4"><div class="modal-header bg-light border-0 rounded-top-4"><h5 class="modal-title fw-bold text-success"><i class="fa-solid fa-check-double me-2"></i> الموافقة وتحديد العمولة</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
-<form method="POST"><div class="modal-body p-4"><h5 class="fw-bold mb-4 text-center text-primary" id="modalCourseTitle"></h5>
-    <div id="usd_section" class="bg-light p-3 rounded-3 mb-3 border border-success" style="display: none;"><p class="fw-bold text-success mb-2"><i class="fa-solid fa-dollar-sign"></i> إعدادات عمولة (الدولار) - السعر: $<span id="lbl_price_usd"></span></p><div class="row"><div class="col-6"><select name="comm_type_usd" id="inp_type_usd" class="form-select fw-bold text-success"><option value="percentage">نسبة مئوية (%)</option><option value="fixed">مبلغ ثابت مقطوع ($)</option></select></div><div class="col-6"><input type="number" step="0.01" name="comm_value_usd" id="inp_val_usd" class="form-control fw-bold text-center text-success" placeholder="العمولة"></div></div></div>
-    <div id="dzd_section" class="bg-light p-3 rounded-3 mb-3 border border-primary" style="display: none;"><p class="fw-bold text-primary mb-2"><i class="fa-solid fa-money-bill"></i> إعدادات عمولة (الدينار) - السعر: <span id="lbl_price_dzd"></span> د.ج</p><div class="row"><div class="col-6"><select name="comm_type_dzd" id="inp_type_dzd" class="form-select fw-bold text-primary"><option value="percentage">نسبة مئوية (%)</option><option value="fixed">مبلغ ثابت مقطوع (د.ج)</option></select></div><div class="col-6"><input type="number" step="0.01" name="comm_value_dzd" id="inp_val_dzd" class="form-control fw-bold text-center text-primary" placeholder="العمولة"></div></div></div>
-    <input type="hidden" name="course_id" id="modalCourseId"></div><div class="modal-footer border-0"><button type="submit" name="publish_course" class="btn btn-success w-100 rounded-pill fw-bold shadow-sm">تأكيد ونشر الدورة</button></div></form>
-</div></div></div></div></div><script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script><script> function openPublishModal(id, title, usd, dzd) { document.getElementById('modalCourseId').value = id; document.getElementById('modalCourseTitle').innerText = title; let usdSec = document.getElementById('usd_section'); let dzdSec = document.getElementById('dzd_section'); if (usd > 0) { usdSec.style.display = 'block'; document.getElementById('lbl_price_usd').innerText = usd; document.getElementById('inp_type_usd').required = true; document.getElementById('inp_val_usd').required = true; } else { usdSec.style.display = 'none'; document.getElementById('inp_type_usd').required = false; document.getElementById('inp_val_usd').required = false; } if (dzd > 0) { dzdSec.style.display = 'block'; document.getElementById('lbl_price_dzd').innerText = dzd; document.getElementById('inp_type_dzd').required = true; document.getElementById('inp_val_dzd').required = true; } else { dzdSec.style.display = 'none'; document.getElementById('inp_type_dzd').required = false; document.getElementById('inp_val_dzd').required = false; } new bootstrap.Modal(document.getElementById('publishModal')).show(); } document.getElementById("openSidebarBtn").addEventListener("click", () => { document.getElementById("sidebar").classList.add("active"); document.getElementById("sidebarOverlay").classList.add("active"); }); document.getElementById("sidebarOverlay").addEventListener("click", () => { document.getElementById("sidebar").classList.remove("active"); document.getElementById("sidebarOverlay").classList.remove("active"); });</script></body></html>
+<div class="modal fade" id="pubModal" tabindex="-1"><div class="modal-dialog modal-lg modal-dialog-centered"><form method="post" class="modal-content"><?= csrf_field() ?><input type="hidden" name="act" value="publish"><input type="hidden" name="course_id" id="pId">
+  <div class="modal-header"><h5 class="modal-title fw-bold text-success"><i class="fa-solid fa-check-double"></i> <?= e(d('الموافقة وتحديد عمولة المدرب', 'Approve & set trainer commission')) ?></h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+  <div class="modal-body"><h6 class="text-center fw-bold mb-3" id="pTitle"></h6>
+    <?php foreach (['usd' => ['$', 'bg-g1'], 'dzd' => [d('د.ج', 'DZD'), 'bg-g2']] as $cur => [$sym, $_]): ?>
+    <div class="ai-box mb-3" id="sec_<?= $cur ?>" style="display:none"><div class="fw-bold mb-2"><?= e(d('عمولة', 'Commission')) ?> (<?= $sym ?>) — <?= e(t('price')) ?>: <span id="lp_<?= $cur ?>"></span></div>
+      <div class="row g-2"><div class="col-6"><select name="comm_type_<?= $cur ?>" class="form-select"><option value="percentage"><?= e(d('نسبة مئوية %', 'Percentage %')) ?></option><option value="fixed"><?= e(d('مبلغ ثابت', 'Fixed amount')) ?></option></select></div>
+      <div class="col-6"><input type="number" step="0.01" min="0" name="comm_value_<?= $cur ?>" class="form-control" placeholder="<?= e(d('القيمة', 'Value')) ?>"></div></div></div><?php endforeach; ?></div>
+  <div class="modal-footer border-0"><button class="btn-aramio w-100"><?= e(d('تأكيد ونشر الدورة', 'Confirm & publish')) ?></button></div></form></div></div>
+<?php
+$footExtra = '<script>pubModal.addEventListener("show.bs.modal",function(e){var b=e.relatedTarget;pId.value=b.dataset.id;pTitle.textContent=b.dataset.title;
+["usd","dzd"].forEach(function(c){var v=parseFloat(b.dataset[c]||0);document.getElementById("sec_"+c).style.display=v>0?"block":"none";document.getElementById("lp_"+c).textContent=v})});
+document.querySelectorAll(".ai-tr").forEach(function(b){b.addEventListener("click",function(){var self=this;AI_ASK("../api/ai_tools.php",{action:"translate_course",course_id:self.dataset.id},function(r){alert(r.ok?' . json_encode(d('تمت الترجمة وحفظها: ', 'Translated & saved: ')) . '+r.saved:(r.message||"error"))},self)})});</script>';
+require '../includes/partials/dash_footer.php';

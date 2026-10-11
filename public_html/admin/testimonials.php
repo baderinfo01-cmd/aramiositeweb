@@ -1,49 +1,19 @@
 <?php
 require_once 'admin_init.php';
-$success_msg = '';
-
-if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['add_test'])) {
-    $pdo->prepare("INSERT INTO testimonials (student_name, course_name, feedback_text, rating) VALUES (?, ?, ?, ?)")->execute([$_POST['name'], $_POST['course'], $_POST['feedback'], $_POST['rating']]);
-    $success_msg = "تم إضافة الرأي بنجاح!";
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    require_post_csrf(); $act = $_POST['act'] ?? '';
+    if ($act === 'add') { $r = max(1, min(5, (int)$_POST['rating'])); $pdo->prepare("INSERT INTO testimonials (student_name, course_name, feedback_text, rating) VALUES (?,?,?,?)")->execute([mb_substr(trim((string)$_POST['name']), 0, 100), mb_substr(trim((string)$_POST['course']), 0, 100), trim((string)$_POST['feedback']), $r]); flash('ok', d('تمت الإضافة.', 'Added.')); }
+    elseif ($act === 'toggle') $pdo->prepare("UPDATE testimonials SET status = 1 - status WHERE id=?")->execute([(int)$_POST['id']]);
+    elseif ($act === 'delete') { $pdo->prepare("DELETE FROM testimonials WHERE id=?")->execute([(int)$_POST['id']]); flash('ok', d('تم الحذف.', 'Deleted.')); }
+    redirect('testimonials.php');
 }
-
-if (isset($_GET['delete'])) {
-    $pdo->prepare("DELETE FROM testimonials WHERE id = ?")->execute([$_GET['delete']]);
-    $success_msg = "تم الحذف.";
-}
-
 $tests = $pdo->query("SELECT * FROM testimonials ORDER BY id DESC")->fetchAll();
-require_once 'includes/header.php';
+$dashTitle = d('آراء المتدربين', 'Testimonials');
+require '../includes/partials/dash_header.php';
 ?>
-
-<div class="d-flex justify-content-between align-items-center mb-4">
-    <h3 class="text-gray-800"><i class="fa-solid fa-comments text-primary"></i> إدارة آراء المتدربين</h3>
-    <button class="btn btn-success" data-bs-toggle="modal" data-bs-target="#addTestModal"><i class="fa-solid fa-plus"></i> إضافة رأي</button>
-</div>
-
-<?php if($success_msg): ?> <div class="alert alert-success"><?php echo $success_msg; ?></div> <?php endif; ?>
-
-<div class="row">
-    <?php foreach($tests as $test): ?>
-    <div class="col-md-4 mb-4">
-        <div class="card shadow h-100 border-left-primary">
-            <div class="card-body">
-                <div class="text-warning mb-2"><?php for($i=1; $i<=$test['rating']; $i++) echo '<i class="fa-solid fa-star"></i>'; ?></div>
-                <p class="fst-italic text-muted">"<?php echo htmlspecialchars($test['feedback_text']); ?>"</p>
-                <hr>
-                <h6 class="fw-bold mb-1"><?php echo htmlspecialchars($test['student_name']); ?></h6>
-                <small class="text-muted"><?php echo htmlspecialchars($test['course_name']); ?></small>
-            </div>
-            <div class="card-footer bg-white border-top-0 text-center">
-                <a href="?delete=<?php echo $test['id']; ?>" class="btn btn-sm btn-outline-danger" onclick="return confirm('حذف؟')"><i class="fa-solid fa-trash"></i> حذف</a>
-            </div>
-        </div>
-    </div>
-    <?php endforeach; ?>
-</div>
-
-<!-- Modal الإضافة (نفس الفكرة السابقة، يحتوي على حقول الاسم، الدورة، النص، والتقييم من 1-5) -->
-<!-- سأختصره هنا لتوفير المساحة، يمكنك بناءه بسهولة بناء على الـ modal السابق -->
-<div class="modal fade" id="addTestModal" tabindex="-1"><div class="modal-dialog"><div class="modal-content"><form method="POST"><div class="modal-body"><input type="text" name="name" class="form-control mb-2" placeholder="اسم المتدرب" required><input type="text" name="course" class="form-control mb-2" placeholder="اسم الدورة" required><textarea name="feedback" class="form-control mb-2" placeholder="نص الرأي" required></textarea><input type="number" name="rating" class="form-control mb-2" min="1" max="5" placeholder="التقييم (1-5)" required></div><div class="modal-footer"><button type="submit" name="add_test" class="btn btn-primary">حفظ</button></div></form></div></div></div>
-
-<?php require_once 'includes/footer.php'; ?>
+<div class="row g-3"><div class="col-lg-4"><div class="dcard"><div class="dcard-h"><?= e(d('إضافة رأي', 'Add testimonial')) ?></div><form method="post" class="dcard-b d-grid gap-2"><?= csrf_field() ?><input type="hidden" name="act" value="add">
+  <input name="name" class="form-control" required placeholder="<?= e(t('name')) ?>"><input name="course" class="form-control" required placeholder="<?= e(d('الدورة', 'Course')) ?>"><textarea name="feedback" rows="4" class="form-control" required placeholder="<?= e(d('نص الرأي', 'Feedback')) ?>"></textarea>
+  <select name="rating" class="form-select"><?php for ($i = 5; $i >= 1; $i--): ?><option value="<?= $i ?>"><?= str_repeat('★', $i) ?></option><?php endfor; ?></select><button class="btn-aramio"><?= e(t('save')) ?></button></form></div></div>
+<div class="col-lg-8"><div class="row g-3"><?php foreach ($tests as $x): ?><div class="col-md-6"><div class="dcard h-100 <?= $x['status'] ? '' : 'opacity-50' ?>"><div class="dcard-b"><div class="text-warning"><?= stars((float)$x['rating']) ?></div><p class="my-2 small">“<?= e($x['feedback_text']) ?>”</p><b><?= e($x['student_name']) ?></b> <span class="text-muted small">— <?= e($x['course_name']) ?></span>
+  <div class="mt-2"><?= action_btn('', ['act' => 'toggle', 'id' => $x['id']], 'btn-soft-warn', '', $x['status'] ? 'fa-eye' : 'fa-eye-slash') ?> <?= action_btn('', ['act' => 'delete', 'id' => $x['id']], 'btn-soft-bad', '?', 'fa-trash') ?></div></div></div></div><?php endforeach; ?></div></div></div>
+<?php require '../includes/partials/dash_footer.php';

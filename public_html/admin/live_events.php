@@ -1,200 +1,38 @@
 <?php
 require_once 'admin_init.php';
-$success_msg = '';
-
-// 1. تحديث حالة الطلب
-if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_status'])) {
-    $id = $_POST['lead_id'];
-    $status = $_POST['status'];
-    $pdo->prepare("UPDATE live_events_leads SET status = ? WHERE id = ?")->execute([$status, $id]);
-    $success_msg = "تم تحديث حالة المسجل بنجاح.";
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    require_post_csrf();
+    $id = (int)($_POST['lead_id'] ?? 0);
+    if (($_POST['act'] ?? '') === 'status' && in_array($_POST['status'] ?? '', ['new', 'contacted', 'paid', 'canceled'], true)) { $pdo->prepare("UPDATE live_events_leads SET status=? WHERE id=?")->execute([$_POST['status'], $id]); flash('ok', d('تم تحديث الحالة.', 'Status updated.')); }
+    elseif (($_POST['act'] ?? '') === 'delete') { admin_only(); $pdo->prepare("DELETE FROM live_events_leads WHERE id=?")->execute([$id]); flash('ok', d('تم الحذف.', 'Deleted.')); }
+    redirect('live_events.php?' . http_build_query(array_intersect_key($_GET, ['marketer' => 1, 'status' => 1])));
 }
-
-// 2. حذف الطلب
-if (isset($_GET['delete'])) {
-    $pdo->prepare("DELETE FROM live_events_leads WHERE id = ?")->execute([$_GET['delete']]);
-    $success_msg = "تم حذف الطلب نهائياً.";
+$marketers = $pdo->query("SELECT marketer_code, COUNT(*) n FROM live_events_leads GROUP BY marketer_code ORDER BY n DESC")->fetchAll(PDO::FETCH_KEY_PAIR);
+$fm = $_GET['marketer'] ?? ''; $fs = $_GET['status'] ?? '';
+$where = []; $par = [];
+if ($fm !== '' && isset($marketers[$fm])) { $where[] = 'marketer_code=?'; $par[] = $fm; }
+if (in_array($fs, ['new', 'contacted', 'paid', 'canceled'], true)) { $where[] = 'status=?'; $par[] = $fs; }
+$st = $pdo->prepare("SELECT * FROM live_events_leads" . ($where ? ' WHERE ' . implode(' AND ', $where) : '') . " ORDER BY created_at DESC"); $st->execute($par); $leads = $st->fetchAll();
+if (($_GET['export'] ?? '') === 'csv') {
+    header('Content-Type: text/csv; charset=utf-8'); header('Content-Disposition: attachment; filename="event_leads.csv"');
+    $o = fopen('php://output', 'w'); fwrite($o, "\xEF\xBB\xBF"); fputcsv($o, ['id', 'event', 'name', 'dob', 'phone', 'whatsapp', 'country', 'research_title', 'marketer', 'status', 'created_at']);
+    foreach ($leads as $l) fputcsv($o, [$l['id'], $l['event_name'], $l['full_name_ar'], $l['dob'], $l['phone'], $l['whatsapp'], $l['country'], $l['research_title'], $l['marketer_code'], $l['status'], $l['created_at']]); exit;
 }
-
-// 3. نظام الفلترة الذكي (جلب البيانات حسب المسوق)
-$current_filter = isset($_GET['marketer']) ? $_GET['marketer'] : 'all';
-
-if ($current_filter === 'yassine') {
-    $stmt = $pdo->prepare("SELECT * FROM live_events_leads WHERE marketer_code = 'yassine' ORDER BY created_at DESC");
-} elseif ($current_filter === 'sabira') {
-    $stmt = $pdo->prepare("SELECT * FROM live_events_leads WHERE marketer_code = 'sabira' ORDER BY created_at DESC");
-} else {
-    // جلب الكل
-    $stmt = $pdo->prepare("SELECT * FROM live_events_leads ORDER BY created_at DESC");
-}
-$stmt->execute();
-$leads = $stmt->fetchAll();
-
-require_once 'includes/header.php';
+$dashTitle = d('مسجلو الملتقيات الدولية', 'International event registrants');
+require '../includes/partials/dash_header.php';
 ?>
-
-<style>
-/* --- تنسيقات خاصة لتحويل الجدول إلى بطاقات على الهاتف --- */
-@media (max-width: 768px) {
-    .responsive-table, .responsive-table tbody, .responsive-table tr, .responsive-table td {
-        display: block;
-        width: 100%;
-    }
-    .responsive-table thead {
-        display: none; /* إخفاء رأس الجدول في الهاتف */
-    }
-    .responsive-table tr {
-        margin-bottom: 1rem;
-        background-color: #fff;
-        border: 1px solid #e0e0e0;
-        border-radius: 15px;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.05);
-        padding: 10px;
-    }
-    .responsive-table td {
-        text-align: right !important;
-        border-bottom: 1px solid #f1f1f1 !important;
-        padding: 12px 10px !important;
-        position: relative;
-        display: flex;
-        flex-direction: column; /* ترتيب العناصر عمودياً */
-        align-items: flex-start;
-        gap: 5px;
-    }
-    .responsive-table td:last-child {
-        border-bottom: none !important;
-        align-items: stretch; /* جعل أزرار الإجراءات تمتد لكامل العرض */
-    }
-    /* إنشاء عناوين للخلايا في الهاتف عبر السمة data-label */
-    .responsive-table td::before {
-        content: attr(data-label);
-        font-weight: bold;
-        color: #0b1c3f;
-        font-size: 0.85rem;
-        margin-bottom: 3px;
-        opacity: 0.7;
-    }
-    
-    /* تعديلات على الأزرار والنصوص في الهاتف */
-    .action-form { width: 100%; }
-    .action-form select, .action-form button { width: 100% !important; margin-bottom: 5px; }
-    .filter-section { flex-direction: column !important; align-items: stretch !important; }
-    .filter-section a { width: 100%; text-align: center; justify-content: center; display: flex; }
-}
-</style>
-
-<div class="d-flex flex-column flex-md-row justify-content-between align-items-center mb-4 gap-3">
-    <h3 class="fw-bold text-dark text-center text-md-start m-0"><i class="fa-solid fa-plane-departure text-warning me-2"></i> مسجلو ملتقى ماليزيا 🇲🇾</h3>
-</div>
-
-<?php if($success_msg): ?> 
-    <div class="alert alert-success rounded-pill fw-bold shadow-sm"><i class="fa-solid fa-check-circle"></i> <?php echo $success_msg; ?></div> 
-<?php endif; ?>
-
-<!-- 💡 أزرار الفلترة (تم جعلها متجاوبة) -->
-<div class="bg-white p-3 rounded-4 shadow-sm mb-4 filter-section d-flex align-items-center gap-3 border-start border-4 border-primary">
-    <span class="fw-bold text-muted text-center text-md-start"><i class="fa-solid fa-filter me-1"></i> تصفية:</span>
-    
-    <a href="?marketer=all" class="btn rounded-pill px-4 fw-bold <?php echo ($current_filter == 'all') ? 'btn-primary' : 'btn-outline-primary'; ?>">
-        الجميع <span class="badge bg-light text-primary ms-1"><?php echo ($current_filter == 'all') ? count($leads) : ''; ?></span>
-    </a>
-    
-    <a href="?marketer=yassine" class="btn rounded-pill px-4 fw-bold <?php echo ($current_filter == 'yassine') ? 'btn-primary' : 'btn-outline-primary'; ?>">
-        👨‍💼 ياسين <span class="badge bg-light text-primary ms-1"><?php echo ($current_filter == 'yassine') ? count($leads) : ''; ?></span>
-    </a>
-    
-    <a href="?marketer=sabira" class="btn rounded-pill px-4 fw-bold <?php echo ($current_filter == 'sabira') ? 'btn-primary' : 'btn-outline-primary'; ?>">
-        👩‍💼 صبيرة <span class="badge bg-light text-primary ms-1"><?php echo ($current_filter == 'sabira') ? count($leads) : ''; ?></span>
-    </a>
-</div>
-
-<div class="admin-card card p-0 overflow-hidden mb-5 border-0 shadow-sm bg-transparent bg-md-white">
-    <div class="table-responsive border-0">
-        <table class="table table-hover align-middle text-center mb-0 responsive-table">
-            <thead class="text-white small fw-bold d-none d-md-table-header-group" style="background-color: #0b1c3f;">
-                <tr>
-                    <th class="py-3 ps-4 text-start">الاسم ومصدر التسجيل</th>
-                    <th class="py-3">الدولة</th>
-                    <th class="py-3">تاريخ الميلاد</th>
-                    <th class="py-3">الهاتف / الواتساب</th>
-                    <th class="py-3">التخصص / نوع المشاركة</th>
-                    <th class="py-3">الحالة والإجراء</th>
-                </tr>
-            </thead>
-            <tbody style="background-color: white;">
-                <?php if(empty($leads)): ?>
-                    <tr><td colspan="6" class="py-5 text-muted fw-bold fs-5 text-center">لا يوجد مسجلين في هذه القائمة حتى الآن.</td></tr>
-                <?php else: ?>
-                    <?php foreach($leads as $lead): 
-                        $clean_whatsapp = preg_replace('/[^0-9]/', '', $lead['whatsapp']);
-                        $country_color = (strpos($lead['country'], 'الجزائر') !== false) ? 'text-success' : 'text-danger';
-                        
-                        // تحديد شكل بادج المسوق
-                        if($lead['marketer_code'] == 'yassine') {
-                            $source_badge = '<span class="badge bg-info text-dark mt-2"><i class="fa-solid fa-link"></i> رابط ياسين</span>';
-                        } elseif ($lead['marketer_code'] == 'sabira') {
-                            $source_badge = '<span class="badge bg-warning text-dark mt-2"><i class="fa-solid fa-link"></i> رابط صبيرة</span>';
-                        } else {
-                            $source_badge = '<span class="badge bg-secondary mt-2"><i class="fa-solid fa-globe"></i> زيارة مباشرة</span>';
-                        }
-                    ?>
-                    <tr class="<?php echo ($lead['status'] == 'new') ? 'table-warning bg-opacity-25' : ''; ?>">
-                        
-                        <td data-label="الاسم ومصدر التسجيل" class="text-start ps-md-4 fw-bold w-100 w-md-auto">
-                            <div><i class="fa-solid fa-user-tie text-primary opacity-50 me-1"></i> <span class="fs-6"><?php echo htmlspecialchars($lead['full_name_ar']); ?></span></div>
-                            <?php echo $source_badge; ?>
-                        </td>
-
-                        <td data-label="الدولة">
-                            <span class="badge bg-light border fw-bold <?php echo $country_color; ?> px-3 py-2 fs-6">
-                                <i class="fa-solid fa-earth-africa"></i> <?php echo htmlspecialchars($lead['country'] ?? '-'); ?>
-                            </span>
-                        </td>
-                        
-                        <td data-label="تاريخ الميلاد" class="text-muted fw-bold">
-                            <?php echo htmlspecialchars($lead['dob'] ?? '-'); ?>
-                        </td>
-
-                        <td data-label="الهاتف / الواتساب" class="fw-bold" dir="ltr">
-                            <span class="text-secondary d-inline-block d-md-block mb-2 fs-6"><i class="fa-solid fa-phone ms-1"></i> <?php echo htmlspecialchars($lead['phone']); ?></span>
-                            <a href="https://wa.me/<?php echo $clean_whatsapp; ?>" target="_blank" class="badge bg-success text-decoration-none px-3 py-2 rounded-pill shadow-sm" style="transition: 0.2s;">
-                                <i class="fa-brands fa-whatsapp fs-5 align-middle"></i> مراسلة
-                            </a>
-                        </td>
-                        
-                        <td data-label="التخصص / نوع المشاركة" class="text-muted small fw-bold lh-base" style="max-width: 100%; width: max-content;">
-                            <?php echo htmlspecialchars($lead['research_title']); ?>
-                        </td>
-                        
-                        <td data-label="الحالة والإجراء">
-                            <form method="POST" class="d-flex flex-column gap-2 align-items-center mb-1 action-form">
-                                <input type="hidden" name="lead_id" value="<?php echo $lead['id']; ?>">
-                                <select name="status" class="form-select form-select-sm fw-bold <?php echo ($lead['status'] == 'new') ? 'border-warning text-dark' : (($lead['status'] == 'paid') ? 'border-success text-success bg-success bg-opacity-10' : ''); ?>" style="width: 140px; cursor:pointer;">
-                                    <option value="new" <?php echo ($lead['status'] == 'new') ? 'selected' : ''; ?>>🆕 طلب جديد</option>
-                                    <option value="contacted" <?php echo ($lead['status'] == 'contacted') ? 'selected' : ''; ?>>📞 تم الاتصال</option>
-                                    <option value="paid" <?php echo ($lead['status'] == 'paid') ? 'selected' : ''; ?>>💸 دفع مؤكد</option>
-                                    <option value="canceled" <?php echo ($lead['status'] == 'canceled') ? 'selected' : ''; ?>>❌ ملغي</option>
-                                </select>
-                                <button type="submit" name="update_status" class="btn btn-sm btn-primary rounded-pill px-3 fw-bold shadow-sm" style="background-color: #0b1c3f; border:none;">تحديث</button>
-                            </form>
-                            <a href="?delete=<?php echo $lead['id']; ?>" class="btn btn-sm btn-outline-danger fw-bold w-100 w-md-auto mt-1 text-decoration-none" onclick="return confirm('هل أنت متأكد من الحذف؟')">
-                                <i class="fa-solid fa-trash ms-1"></i> حذف
-                            </a>
-                        </td>
-                        
-                    </tr>
-                    <?php endforeach; ?>
-                <?php endif; ?>
-            </tbody>
-        </table>
-    </div>
-</div>
-
-</div></div> 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-<script>
-    document.getElementById("openSidebarBtn").addEventListener("click", () => { document.getElementById("sidebar").classList.add("active"); document.getElementById("sidebarOverlay").classList.add("active"); }); 
-    document.getElementById("sidebarOverlay").addEventListener("click", () => { document.getElementById("sidebar").classList.remove("active"); document.getElementById("sidebarOverlay").classList.remove("active"); });
-</script>
-</body>
-</html>
+<div class="d-flex flex-wrap justify-content-between gap-2 mb-3">
+  <form class="d-flex gap-2 flex-wrap" method="get"><select name="marketer" class="form-select" style="width:auto" onchange="this.form.submit()"><option value=""><?= e(d('كل المسوقين', 'All marketers')) ?></option>
+    <?php foreach ($marketers as $m => $n): ?><option value="<?= e($m) ?>" <?= $fm === $m ? 'selected' : '' ?>><?= e($m) ?> (<?= $n ?>)</option><?php endforeach; ?></select>
+    <select name="status" class="form-select" style="width:auto" onchange="this.form.submit()"><option value=""><?= e(t('all')) ?></option><?php foreach (['new', 'contacted', 'paid', 'canceled'] as $s): ?><option value="<?= $s ?>" <?= $fs === $s ? 'selected' : '' ?>><?= e(strip_tags(status_badge($s))) ?></option><?php endforeach; ?></select></form>
+  <a class="btn-soft btn-soft-ok py-2" href="?<?= e(http_build_query(array_merge($_GET, ['export' => 'csv']))) ?>"><i class="fa-solid fa-file-csv"></i> CSV</a></div>
+<div class="dcard"><div class="table-wrap"><table class="dtable"><thead><tr><th><?= e(t('name')) ?></th><th><?= e(t('country')) ?></th><th><?= e(d('التواصل', 'Contact')) ?></th><th><?= e(d('عنوان البحث', 'Research title')) ?></th><th><?= e(d('المسوّق', 'Marketer')) ?></th><th><?= e(t('status')) ?></th><th></th></tr></thead><tbody>
+<?php foreach ($leads as $l): ?><tr class="<?= $l['status'] === 'new' ? 'bg-warning bg-opacity-10' : '' ?>">
+  <td><b><?= e($l['full_name_ar']) ?></b><div class="small text-muted"><?= e($l['dob'] ?: '') ?> · <?= e(substr($l['created_at'], 0, 10)) ?></div></td><td><?= e(country_flag((string)$l['country'])) ?> <?= e($l['country']) ?></td>
+  <td class="small" dir="ltr"><?= e($l['phone']) ?><br><a target="_blank" href="<?= e(wa_link($l['whatsapp'], 'مرحباً ' . $l['full_name_ar'] . '، بخصوص تسجيلكم في ' . $l['event_name'])) ?>"><i class="fa-brands fa-whatsapp"></i> <?= e($l['whatsapp']) ?></a></td>
+  <td class="small" style="max-width:260px"><?= e($l['research_title']) ?></td><td><span class="st st-info"><?= e($l['marketer_code']) ?></span></td>
+  <td><form method="post"><?= csrf_field() ?><input type="hidden" name="act" value="status"><input type="hidden" name="lead_id" value="<?= (int)$l['id'] ?>"><select name="status" class="form-select form-select-sm" onchange="this.form.submit()">
+    <?php foreach (['new' => '🆕 ' . d('جديد', 'New'), 'contacted' => '📞 ' . d('تم الاتصال', 'Contacted'), 'paid' => '💸 ' . d('دفع مؤكد', 'Paid'), 'canceled' => '❌ ' . d('ملغي', 'Canceled')] as $k => $lb): ?><option value="<?= $k ?>" <?= $l['status'] === $k ? 'selected' : '' ?>><?= e($lb) ?></option><?php endforeach; ?></select></form></td>
+  <td class="text-end"><?php if ($isSuperAdmin) echo action_btn('', ['act' => 'delete', 'lead_id' => $l['id']], 'btn-soft-bad', d('حذف؟', 'Delete?'), 'fa-trash'); ?></td></tr><?php endforeach; ?>
+<?php if (!$leads): ?><tr><td colspan="7" class="empty"><i class="fa-solid fa-earth-asia"></i><?= e(d('لا يوجد مسجلون', 'No registrants')) ?></td></tr><?php endif; ?></tbody></table></div></div>
+<?php require '../includes/partials/dash_footer.php';

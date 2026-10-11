@@ -1,232 +1,88 @@
 <?php
 require_once 'admin_init.php';
-$success_msg = ''; $error_msg = '';
+admin_only();
+function clean_html(string $h): string { return preg_replace('/<(\w+)[^>]*>/', '<$1>', strip_tags($h, '<br><strong><b><i><span><div><p><ul><li><a>')); }
 
-// ==========================================
-// 1. معالجة حفظ الإعدادات العامة
-// ==========================================
-if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['save_general_settings'])) {
-    $keys = [
-        'site_name', 'contact_email', 'phone_number', 'facebook_link', 'twitter_link', 'instagram_link', 'youtube_link',
-        'promo_title', 'promo_subtitle', 'promo_end_date', 'promo_link',
-        'promo_title_en', 'promo_subtitle_en', 'promo_link_en',
-        'exchange_rate', 'stat_courses', 'stat_students', 'stat_trainers', 'stat_consultations',
-        'msg_course_approved', 'msg_order_approved', 'msg_order_rejected', 'msg_trainer_paid'
-    ];
-    foreach ($keys as $key) {
-        if (isset($_POST[$key])) {
-            $pdo->prepare("INSERT INTO settings (setting_key, setting_value_ar) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value_ar = VALUES(setting_value_ar)")->execute([$key, $_POST[$key]]);
-        }
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    require_post_csrf(); $act = $_POST['act'] ?? '';
+    if ($act === 'general') {
+        foreach (['site_name', 'contact_email', 'phone_number', 'whatsapp_number', 'facebook_link', 'twitter_link', 'instagram_link', 'youtube_link', 'promo_title', 'promo_subtitle', 'promo_link', 'promo_end_date', 'exchange_rate', 'msg_course_approved', 'msg_order_approved', 'msg_order_rejected', 'msg_trainer_paid'] as $k)
+            if (isset($_POST[$k])) setSetting($k, trim((string)$_POST[$k]));
+        foreach (['promo_title_en', 'promo_subtitle_en', 'promo_link_en'] as $k) if (isset($_POST[$k])) setSetting($k, trim((string)$_POST[$k]));
+        setSetting('seo_description', trim((string)($_POST['seo_description_ar'] ?? '')), trim((string)($_POST['seo_description_en'] ?? '')));
+        setSetting('about_us', trim((string)($_POST['about_us_ar'] ?? '')), trim((string)($_POST['about_us_en'] ?? '')));
+        if (isset($_POST['exchange_rate']) && (float)$_POST['exchange_rate'] <= 0) setSetting('exchange_rate', '135');
+        audit('settings_general'); flash('ok', d('تم حفظ الإعدادات.', 'Settings saved.'));
+    } elseif ($act === 'payments') {
+        setSetting('bank_details', clean_html((string)$_POST['bank_details'])); setSetting('agent_details', clean_html((string)$_POST['agent_details']));
+        setSetting('paypal_email', trim((string)$_POST['paypal_email'])); audit('settings_payments'); flash('ok', d('تم حفظ بيانات الدفع.', 'Payment details saved.'));
+    } elseif ($act === 'ai') {
+        $prov = in_array($_POST['ai_provider'] ?? '', ['', 'anthropic', 'openai', 'gemini', 'compatible'], true) ? $_POST['ai_provider'] : '';
+        setSetting('ai_provider', $prov); setSetting('ai_model', trim((string)$_POST['ai_model'])); setSetting('ai_base_url', trim((string)$_POST['ai_base_url']));
+        setSetting('ai_enabled', !empty($_POST['ai_enabled']) ? '1' : '0');
+        if (trim((string)($_POST['ai_api_key'] ?? '')) !== '') setSetting('ai_api_key_enc', ai_encrypt(trim((string)$_POST['ai_api_key'])));
+        if (!empty($_POST['ai_clear_key'])) setSetting('ai_api_key_enc', '');
+        audit('settings_ai', $prov); flash('ok', d('تم حفظ إعدادات الذكاء الاصطناعي.', 'AI settings saved.'));
+    } elseif ($act === 'upload') {
+        $type = ($_POST['image_type'] ?? '') === 'review' ? 'review' : 'gallery';
+        $n = save_upload('image', $type === 'gallery' ? 'gallery' : 'reviews');
+        if ($n) { $pdo->prepare("INSERT INTO gallery_images (image_name, image_type) VALUES (?,?)")->execute([$n, $type]); flash('ok', d('تم رفع الصورة.', 'Image uploaded.')); }
+        else flash('err', d('تعذّر الرفع: الصيغ المسموحة JPG/PNG/WEBP حتى 5MB.', 'Upload failed: JPG/PNG/WEBP up to 5MB.'));
+    } elseif ($act === 'delete_img') {
+        $s = $pdo->prepare("SELECT image_name, image_type FROM gallery_images WHERE id=?"); $s->execute([(int)$_POST['id']]); $im = $s->fetch();
+        if ($im) { $f = dirname(__DIR__) . '/uploads/' . ($im['image_type'] === 'gallery' ? 'gallery/' : 'reviews/') . basename($im['image_name']); if (is_file($f)) @unlink($f); $pdo->prepare("DELETE FROM gallery_images WHERE id=?")->execute([(int)$_POST['id']]); flash('ok', d('تم الحذف.', 'Deleted.')); }
     }
-    $success_msg = "تم حفظ الإعدادات بنجاح!";
+    redirect('settings.php#' . ($_POST['tab'] ?? 'general'));
 }
-
-// ==========================================
-// 2. معالجة رفع صورة جديدة (للمعرض أو التقييمات)
-// ==========================================
-if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['upload_image'])) {
-    $image_type = $_POST['image_type']; // gallery أو review
-    $folder = ($image_type == 'gallery') ? '../uploads/gallery/' : '../uploads/reviews/';
-    
-    if (isset($_FILES['image']) && $_FILES['image']['error'] == 0) {
-        $allowed = ['jpg', 'jpeg', 'png', 'webp'];
-        $ext = pathinfo($_FILES['image']['name'], PATHINFO_EXTENSION);
-        
-        if (in_array(strtolower($ext), $allowed)) {
-            $new_name = time() . '_' . rand(100, 999) . '.' . $ext;
-            if (move_uploaded_file($_FILES['image']['tmp_name'], $folder . $new_name)) {
-                $pdo->prepare("INSERT INTO gallery_images (image_name, image_type) VALUES (?, ?)")->execute([$new_name, $image_type]);
-                $success_msg = "تم رفع وإضافة الصورة بنجاح!";
-            } else { $error_msg = "حدث خطأ أثناء حفظ الصورة."; }
-        } else { $error_msg = "صيغة غير مدعومة. يرجى رفع (JPG, PNG, WEBP)."; }
-    } else { $error_msg = "يرجى اختيار صورة أولاً."; }
-}
-
-// ==========================================
-// 3. معالجة حذف صورة
-// ==========================================
-if (isset($_GET['delete_img'])) {
-    $id = $_GET['delete_img'];
-    $img_data = $pdo->query("SELECT image_name, image_type FROM gallery_images WHERE id = $id")->fetch();
-    if ($img_data) {
-        $folder = ($img_data['image_type'] == 'gallery') ? '../uploads/gallery/' : '../uploads/reviews/';
-        if (file_exists($folder . $img_data['image_name'])) { unlink($folder . $img_data['image_name']); }
-        $pdo->prepare("DELETE FROM gallery_images WHERE id = ?")->execute([$id]);
-        $success_msg = "تم حذف الصورة نهائياً.";
-    }
-}
-
-// جلب البيانات
-$current_settings = [];
-$stmt = $pdo->query("SELECT setting_key, setting_value_ar FROM settings");
-while ($row = $stmt->fetch()) { $current_settings[$row['setting_key']] = $row['setting_value_ar']; }
-function getVal($array, $key) { return isset($array[$key]) ? htmlspecialchars($array[$key]) : ''; }
-
-$gallery_images = $pdo->query("SELECT * FROM gallery_images WHERE image_type = 'gallery' ORDER BY created_at DESC")->fetchAll();
-$review_images = $pdo->query("SELECT * FROM gallery_images WHERE image_type = 'review' ORDER BY created_at DESC")->fetchAll();
-
-require_once 'includes/header.php';
+$S = fn($k, $l = 'ar') => getSetting($pdo, $k, $l);
+$gallery = $pdo->query("SELECT * FROM gallery_images WHERE image_type='gallery' ORDER BY id DESC")->fetchAll();
+$reviews = $pdo->query("SELECT * FROM gallery_images WHERE image_type='review' ORDER BY id DESC")->fetchAll();
+$ai = ai_config(); $aiLocked = (bool)app_config('ai_provider');
+$dashTitle = d('الإعدادات العامة', 'Settings');
+require '../includes/partials/dash_header.php';
+$field = fn($k, $lb, $type = 'text', $dirx = '') => '<div class="col-md-6"><label class="form-label">' . e($lb) . '</label><input type="' . $type . '" name="' . $k . '" value="' . e($type === 'datetime-local' ? str_replace(' ', 'T', $GLOBALS['S']($k)) : $GLOBALS['S']($k)) . '" class="form-control" ' . ($dirx ? 'dir="' . $dirx . '"' : '') . '></div>';
 ?>
-
-<div class="d-flex justify-content-between align-items-center mb-4">
-    <h3 class="fw-bold text-dark"><i class="fa-solid fa-sliders text-primary me-2"></i> التحكم الشامل بالواجهة</h3>
-</div>
-
-<?php if($success_msg): ?> <div class="alert alert-success rounded-pill fw-bold shadow-sm"><i class="fa-solid fa-check-circle"></i> <?php echo $success_msg; ?></div> <?php endif; ?>
-<?php if($error_msg): ?> <div class="alert alert-danger rounded-pill fw-bold shadow-sm"><i class="fa-solid fa-triangle-exclamation"></i> <?php echo $error_msg; ?></div> <?php endif; ?>
-
-<!-- التبويبات الفخمة (Tabs) -->
-<ul class="nav nav-tabs mb-4 border-0" id="adminTabs">
-  <li class="nav-item"><a class="nav-link active fw-bold border-0 bg-white shadow-sm rounded-pill px-4 me-2" data-bs-toggle="tab" href="#general_tab"><i class="fa-solid fa-gear text-danger"></i> إعدادات الموقع والمالية</a></li>
-  <li class="nav-item"><a class="nav-link fw-bold border-0 bg-white shadow-sm rounded-pill px-4 me-2 text-muted" data-bs-toggle="tab" href="#gallery_tab"><i class="fa-solid fa-images text-primary"></i> معرض الصور والميداني</a></li>
-  <li class="nav-item"><a class="nav-link fw-bold border-0 bg-white shadow-sm rounded-pill px-4 text-muted" data-bs-toggle="tab" href="#reviews_tab"><i class="fa-solid fa-comment-dots text-warning"></i> صور التقييمات والمحادثات</a></li>
-</ul>
-
+<ul class="nav nav-pills gap-1 mb-3" id="tabs" role="tablist">
+  <?php foreach (['general' => ['fa-gear', d('عام', 'General')], 'payments' => ['fa-credit-card', d('الدفع', 'Payments')], 'ai' => ['fa-wand-magic-sparkles', d('الذكاء الاصطناعي', 'AI')], 'gallery' => ['fa-images', d('معرض الصور', 'Gallery')], 'reviews' => ['fa-comment-dots', d('صور التقييمات', 'Review images')]] as $k => [$ic, $lb]): ?>
+    <li class="nav-item"><button class="nav-link <?= $k === 'general' ? 'active' : '' ?>" style="color:inherit" data-bs-toggle="pill" data-bs-target="#t_<?= $k ?>"><i class="fa-solid <?= $ic ?>"></i> <?= e($lb) ?></button></li><?php endforeach; ?></ul>
 <div class="tab-content">
-  
-  <!-- ========================================== -->
-  <!-- 💡 التبويب 1: الإعدادات العامة (القديمة) -->
-  <!-- ========================================== -->
-  <div class="tab-pane fade show active" id="general_tab">
-      <form method="POST">
-          <div class="row g-4">
-              <!-- القسم 1: البيانات الأساسية والمالية -->
-              <div class="col-lg-6">
-                  <div class="admin-card card h-100 border-left-danger p-4">
-                      <h5 class="fw-bold text-danger mb-4"><i class="fa-solid fa-building-columns me-2"></i> البيانات والمالية</h5>
-                      <label class="fw-bold text-muted small">اسم الأكاديمية</label>
-                      <input type="text" name="site_name" class="form-control mb-3 fw-bold" value="<?php echo getVal($current_settings, 'site_name'); ?>">
-                      
-                      <div class="row mb-3">
-                          <div class="col-md-6"><label class="fw-bold text-muted small">الإيميل الرسمي</label><input type="email" name="contact_email" class="form-control text-start" dir="ltr" value="<?php echo getVal($current_settings, 'contact_email'); ?>"></div>
-                          <div class="col-md-6 mt-3 mt-md-0"><label class="fw-bold text-muted small">رقم الهاتف</label><input type="tel" name="phone_number" class="form-control text-start" dir="ltr" value="<?php echo getVal($current_settings, 'phone_number'); ?>"></div>
-                      </div>
+<div class="tab-pane fade show active" id="t_general"><form method="post" class="dcard"><div class="dcard-b"><?= csrf_field() ?><input type="hidden" name="act" value="general"><input type="hidden" name="tab" value="general">
+  <div class="row g-3"><?= $field('site_name', d('اسم الموقع', 'Site name')) ?><?= $field('contact_email', t('email'), 'email', 'ltr') ?><?= $field('phone_number', t('phone'), 'text', 'ltr') ?><?= $field('whatsapp_number', 'WhatsApp', 'text', 'ltr') ?>
+  <?= $field('exchange_rate', d('سعر الصرف (1$ = ? د.ج)', 'Exchange rate (1 USD = ? DZD)'), 'number', 'ltr') ?><?= $field('facebook_link', 'Facebook', 'url', 'ltr') ?><?= $field('instagram_link', 'Instagram', 'url', 'ltr') ?><?= $field('youtube_link', 'YouTube', 'url', 'ltr') ?><?= $field('twitter_link', 'X / Twitter', 'url', 'ltr') ?>
+  <div class="col-12"><hr><h6 class="fw-bold"><?= e(d('العرض الترويجي (العدّاد التنازلي)', 'Promo banner (countdown)')) ?></h6></div>
+  <div class="col-md-6"><label class="form-label"><?= e(d('تاريخ الانتهاء', 'End date')) ?></label><input type="datetime-local" name="promo_end_date" class="form-control" value="<?= e(substr(str_replace(' ', 'T', $S('promo_end_date')), 0, 16)) ?>"></div><?= $field('promo_link', d('رابط الزر (عربي)', 'Button link (AR)'), 'text', 'ltr') ?>
+  <?= $field('promo_title', d('العنوان (عربي)', 'Title (AR)')) ?><?= $field('promo_title_en', 'Title (EN)', 'text', 'ltr') ?><?= $field('promo_subtitle', d('الوصف (عربي)', 'Subtitle (AR)')) ?><?= $field('promo_subtitle_en', 'Subtitle (EN)', 'text', 'ltr') ?><?= $field('promo_link_en', 'Button link (EN)', 'text', 'ltr') ?>
+  <div class="col-12"><hr><h6 class="fw-bold">SEO</h6></div>
+  <div class="col-md-6"><label class="form-label">Meta (AR)</label><textarea name="seo_description_ar" rows="2" class="form-control"><?= e($S('seo_description', 'ar')) ?></textarea></div><div class="col-md-6"><label class="form-label">Meta (EN)</label><textarea name="seo_description_en" rows="2" class="form-control" dir="ltr"><?= e($S('seo_description', 'en')) ?></textarea></div>
+  <div class="col-md-6"><label class="form-label"><?= e(d('نص إضافي في "من نحن" (عربي)', 'Extra About text (AR)')) ?></label><textarea name="about_us_ar" rows="3" class="form-control"><?= e(strip_tags($S('about_us', 'ar'))) ?></textarea></div><div class="col-md-6"><label class="form-label">Extra About text (EN)</label><textarea name="about_us_en" rows="3" class="form-control" dir="ltr"><?= e(strip_tags($S('about_us', 'en'))) ?></textarea></div>
+  <div class="col-12"><hr><h6 class="fw-bold"><?= e(d('قوالب رسائل واتساب', 'WhatsApp templates')) ?></h6></div>
+  <?= $field('msg_course_approved', d('الموافقة على دورة', 'Course approved')) ?><?= $field('msg_order_approved', d('تأكيد طلب', 'Order approved')) ?><?= $field('msg_order_rejected', d('رفض طلب', 'Order rejected')) ?><?= $field('msg_trainer_paid', d('سداد مدرب', 'Trainer paid')) ?>
+  <div class="col-12"><button class="btn-aramio px-5"><?= e(t('save')) ?></button></div></div></div></form></div>
 
-                      <div class="bg-light p-3 rounded-3 border mb-4 text-center">
-                          <label class="fw-bold text-danger mb-2">سعر الصرف (1 دولار = ؟ د.ج)</label>
-                          <input type="number" step="0.01" name="exchange_rate" class="form-control fw-bold text-center fs-5 text-danger mx-auto" style="max-width: 200px;" value="<?php echo getVal($current_settings, 'exchange_rate'); ?>" required>
-                      </div>
-                      
-                      <h6 class="fw-bold text-primary mb-3 border-bottom pb-2"><i class="fa-solid fa-link me-2"></i> وسائل التواصل (للفوتر)</h6>
-                      <div class="input-group mb-2"><span class="input-group-text bg-primary text-white border-0"><i class="fa-brands fa-facebook-f"></i></span><input type="url" name="facebook_link" class="form-control text-start" dir="ltr" value="<?php echo getVal($current_settings, 'facebook_link'); ?>"></div>
-                      <div class="input-group mb-2"><span class="input-group-text text-white border-0" style="background:#000;"><i class="fa-brands fa-x-twitter"></i></span><input type="url" name="twitter_link" class="form-control text-start" dir="ltr" value="<?php echo getVal($current_settings, 'twitter_link'); ?>"></div>
-                      <div class="input-group mb-2"><span class="input-group-text text-white border-0" style="background: linear-gradient(45deg, #f09433 0%, #e6683c 25%, #dc2743 50%, #cc2366 75%, #bc1888 100%);"><i class="fa-brands fa-instagram"></i></span><input type="url" name="instagram_link" class="form-control text-start" dir="ltr" value="<?php echo getVal($current_settings, 'instagram_link'); ?>"></div>
-                      <div class="input-group mb-2"><span class="input-group-text bg-danger text-white border-0"><i class="fa-brands fa-youtube"></i></span><input type="url" name="youtube_link" class="form-control text-start" dir="ltr" value="<?php echo getVal($current_settings, 'youtube_link'); ?>"></div>
-                  </div>
-              </div>
+<div class="tab-pane fade" id="t_payments"><form method="post" class="dcard"><div class="dcard-b"><?= csrf_field() ?><input type="hidden" name="act" value="payments"><input type="hidden" name="tab" value="payments"><div class="row g-3">
+  <div class="col-12"><label class="form-label"><?= e(d('بيانات التحويل البنكي (تظهر للمتدرب)', 'Bank transfer details (shown to trainees)')) ?></label><textarea name="bank_details" rows="5" class="form-control"><?= e($S('bank_details')) ?></textarea></div>
+  <div class="col-12"><label class="form-label"><?= e(d('بيانات الوكلاء', 'Agent details')) ?></label><textarea name="agent_details" rows="3" class="form-control"><?= e($S('agent_details')) ?></textarea></div>
+  <div class="col-md-6"><label class="form-label">PayPal</label><input name="paypal_email" class="form-control" dir="ltr" value="<?= e($S('paypal_email')) ?>"></div><div class="col-12"><button class="btn-aramio px-5"><?= e(t('save')) ?></button></div></div></div></form></div>
 
-              <!-- القسم 2: الإعلانات والإحصائيات -->
-              <div class="col-lg-6">
-                  <div class="admin-card card h-100 border-left-warning p-4">
-                      <h5 class="fw-bold text-warning text-dark mb-4"><i class="fa-solid fa-bullhorn me-2"></i> شريط الحدث والإحصائيات</h5>
-                      <label class="fw-bold text-dark small">تاريخ الانتهاء للعداد التنازلي</label>
-                      <input type="datetime-local" name="promo_end_date" class="form-control mb-4 fw-bold border-warning" value="<?php echo getVal($current_settings, 'promo_end_date'); ?>" dir="ltr">
-                      
-                      <ul class="nav nav-tabs mb-3" id="promoTabs">
-                          <li class="nav-item"><a class="nav-link active fw-bold" data-bs-toggle="tab" href="#ar_promo">الإعلان العربي</a></li>
-                          <li class="nav-item"><a class="nav-link fw-bold text-muted" data-bs-toggle="tab" href="#en_promo">English Promo</a></li>
-                      </ul>
-                      <div class="tab-content mb-4 pb-3 border-bottom">
-                          <div class="tab-pane fade show active" id="ar_promo">
-                              <input type="text" name="promo_title" class="form-control mb-2 fw-bold" placeholder="العنوان" value="<?php echo getVal($current_settings, 'promo_title'); ?>">
-                              <input type="text" name="promo_subtitle" class="form-control mb-2" placeholder="الوصف" value="<?php echo getVal($current_settings, 'promo_subtitle'); ?>">
-                              <input type="text" name="promo_link" class="form-control text-start" dir="ltr" placeholder="رابط الزر" value="<?php echo getVal($current_settings, 'promo_link'); ?>">
-                          </div>
-                          <div class="tab-pane fade" id="en_promo" dir="ltr">
-                              <input type="text" name="promo_title_en" class="form-control mb-2 fw-bold text-start" placeholder="Title (EN)" value="<?php echo getVal($current_settings, 'promo_title_en'); ?>">
-                              <input type="text" name="promo_subtitle_en" class="form-control mb-2 text-start" placeholder="Subtitle (EN)" value="<?php echo getVal($current_settings, 'promo_subtitle_en'); ?>">
-                              <input type="text" name="promo_link_en" class="form-control text-start" placeholder="Link (EN)" value="<?php echo getVal($current_settings, 'promo_link_en'); ?>">
-                          </div>
-                      </div>
+<div class="tab-pane fade" id="t_ai"><form method="post" class="dcard"><div class="dcard-b"><?= csrf_field() ?><input type="hidden" name="act" value="ai"><input type="hidden" name="tab" value="ai">
+  <div class="ai-box mb-3"><i class="fa-solid fa-wand-magic-sparkles sparkle"></i> <?= e(d('اختر مزوّد الذكاء الاصطناعي وأدخل مفتاح API. يُخزَّن المفتاح مشفّرًا في قاعدة البيانات. الحالة الحالية:', 'Pick an AI provider and enter its API key. The key is stored encrypted. Current status:')) ?>
+    <b class="<?= ai_available() ? 'text-success' : 'text-danger' ?>"><?= ai_available() ? e(d('مفعّل', 'Active') . ' — ' . $ai['provider'] . ' / ' . $ai['model']) : e(d('غير مفعّل', 'Not configured')) ?></b><?= $aiLocked ? ' <span class="st st-warn">config.local.php</span>' : '' ?></div>
+  <div class="row g-3"><div class="col-md-4"><label class="form-label"><?= e(d('المزوّد', 'Provider')) ?></label><select name="ai_provider" class="form-select" <?= $aiLocked ? 'disabled' : '' ?>>
+    <?php foreach (['' => '—', 'anthropic' => 'Anthropic (Claude)', 'openai' => 'OpenAI', 'gemini' => 'Google Gemini', 'compatible' => 'OpenAI-compatible (DeepSeek, Groq, OpenRouter, Ollama…)'] as $k => $lb): ?><option value="<?= $k ?>" <?= $ai['provider'] === $k ? 'selected' : '' ?>><?= e($lb) ?></option><?php endforeach; ?></select></div>
+  <div class="col-md-4"><label class="form-label"><?= e(d('النموذج (اختياري)', 'Model (optional)')) ?></label><input name="ai_model" class="form-control" dir="ltr" value="<?= e(getSetting($pdo, 'ai_model')) ?>" placeholder="claude-sonnet-5-5 / gpt-4o-mini / gemini-2.0-flash"></div>
+  <div class="col-md-4"><label class="form-label">Base URL (compatible)</label><input name="ai_base_url" class="form-control" dir="ltr" value="<?= e(getSetting($pdo, 'ai_base_url')) ?>" placeholder="https://api.deepseek.com/v1"></div>
+  <div class="col-md-8"><label class="form-label">API Key</label><input type="password" name="ai_api_key" class="form-control" dir="ltr" autocomplete="new-password" placeholder="<?= getSetting($pdo, 'ai_api_key_enc') ? '•••••••• (' . e(d('محفوظ', 'saved')) . ')' : '' ?>"></div>
+  <div class="col-md-4 d-flex align-items-end gap-3"><div class="form-check"><input class="form-check-input" type="checkbox" name="ai_enabled" id="aien" <?= $ai['enabled'] ? 'checked' : '' ?>><label for="aien" class="form-check-label"><?= e(d('تفعيل', 'Enabled')) ?></label></div><div class="form-check"><input class="form-check-input" type="checkbox" name="ai_clear_key" id="aicl"><label for="aicl" class="form-check-label small"><?= e(d('حذف المفتاح', 'Remove key')) ?></label></div></div>
+  <div class="col-12 d-flex gap-2 flex-wrap"><button class="btn-aramio px-5"><?= e(t('save')) ?></button><button type="button" class="btn-soft btn-soft-info px-4" id="aiTest"><i class="fa-solid fa-plug"></i> <?= e(d('اختبار الاتصال', 'Test connection')) ?></button><span id="aiTestOut" class="align-self-center small"></span></div></div></div></form></div>
 
-                      <h6 class="fw-bold text-success mb-3"><i class="fa-solid fa-chart-pie me-2"></i> الأرقام المعروضة في الواجهة</h6>
-                      <div class="row g-2">
-                          <div class="col-6"><label class="small text-muted fw-bold">الدورات</label><input type="number" name="stat_courses" class="form-control text-center fw-bold" value="<?php echo getVal($current_settings, 'stat_courses'); ?>"></div>
-                          <div class="col-6"><label class="small text-muted fw-bold">الطلاب</label><input type="number" name="stat_students" class="form-control text-center fw-bold" value="<?php echo getVal($current_settings, 'stat_students'); ?>"></div>
-                          <div class="col-6 mt-2"><label class="small text-muted fw-bold">المدربين</label><input type="number" name="stat_trainers" class="form-control text-center fw-bold" value="<?php echo getVal($current_settings, 'stat_trainers'); ?>"></div>
-                          <div class="col-6 mt-2"><label class="small text-muted fw-bold text-success">الاستشارات</label><input type="number" name="stat_consultations" class="form-control text-center fw-bold border-success text-success" value="<?php echo getVal($current_settings, 'stat_consultations'); ?>"></div>
-                      </div>
-                  </div>
-              </div>
-
-              <!-- القسم 3: قوالب الواتساب -->
-              <div class="col-12 mt-2 mb-4">
-                  <div class="admin-card card h-100 border-left-success p-4">
-                      <h5 class="fw-bold text-success mb-4"><i class="fa-brands fa-whatsapp me-2"></i> قوالب رسائل الواتساب الأوتوماتيكية</h5>
-                      <div class="row g-4">
-                          <div class="col-md-6"><label class="fw-bold text-muted small">قبول دورة المدرب</label><textarea name="msg_course_approved" class="form-control fw-bold" rows="3" required><?php echo getVal($current_settings, 'msg_course_approved'); ?></textarea></div>
-                          <div class="col-md-6"><label class="fw-bold text-muted small">تفعيل الدورة/الاستشارة للمتدرب</label><textarea name="msg_order_approved" class="form-control fw-bold" rows="3" required><?php echo getVal($current_settings, 'msg_order_approved'); ?></textarea></div>
-                          <div class="col-md-6"><label class="fw-bold text-muted small">رفض إيصال المتدرب</label><textarea name="msg_order_rejected" class="form-control fw-bold" rows="3" required><?php echo getVal($current_settings, 'msg_order_rejected'); ?></textarea></div>
-                          <div class="col-md-6"><label class="fw-bold text-muted small">تحويل أرباح المدرب</label><textarea name="msg_trainer_paid" class="form-control fw-bold" rows="3" required><?php echo getVal($current_settings, 'msg_trainer_paid'); ?></textarea></div>
-                      </div>
-                  </div>
-              </div>
-          </div>
-          <div class="text-center mt-3 mb-5">
-              <button type="submit" name="save_general_settings" class="btn btn-success btn-lg px-5 rounded-pill shadow-sm fw-bold"><i class="fa-solid fa-save me-2"></i> حفظ الإعدادات</button>
-          </div>
-      </form>
-  </div>
-
-  <!-- ========================================== -->
-  <!-- 💡 التبويب 2: صور المعرض (الميدانية) -->
-  <!-- ========================================== -->
-  <div class="tab-pane fade" id="gallery_tab">
-      <div class="card border-0 shadow-sm rounded-4 p-4 mb-5 bg-white">
-          <div class="d-flex justify-content-between align-items-center mb-4">
-              <h5 class="fw-bold text-primary m-0"><i class="fa-solid fa-camera"></i> صور الأنشطة والقاعات</h5>
-              <button class="btn btn-primary rounded-pill fw-bold px-4" data-bs-toggle="modal" data-bs-target="#uploadGalleryModal"><i class="fa-solid fa-upload"></i> رفع صورة للمعرض</button>
-          </div>
-          <div class="row g-4">
-              <?php if(empty($gallery_images)): ?> <div class="col-12"><div class="alert alert-secondary text-center fw-bold">لا توجد صور في المعرض حالياً.</div></div> <?php endif; ?>
-              <?php foreach($gallery_images as $img): ?>
-              <div class="col-md-3 col-6 text-center">
-                  <div class="card border-0 shadow-sm rounded-4 overflow-hidden h-100">
-                      <img src="../uploads/gallery/<?php echo $img['image_name']; ?>" style="height: 150px; object-fit: cover; width: 100%;">
-                      <div class="card-footer bg-white border-0 p-2"><a href="?delete_img=<?php echo $img['id']; ?>" class="btn btn-sm btn-danger rounded-pill w-100 fw-bold" onclick="return confirm('تأكيد الحذف؟')"><i class="fa-solid fa-trash"></i> حذف</a></div>
-                  </div>
-              </div>
-              <?php endforeach; ?>
-          </div>
-      </div>
-  </div>
-
-  <!-- ========================================== -->
-  <!-- 💡 التبويب 3: صور التقييمات (رسائل الواتساب) -->
-  <!-- ========================================== -->
-  <div class="tab-pane fade" id="reviews_tab">
-      <div class="card border-0 shadow-sm rounded-4 p-4 mb-5 bg-white">
-          <div class="d-flex justify-content-between align-items-center mb-4">
-              <h5 class="fw-bold text-warning text-dark m-0"><i class="fa-solid fa-comment-sms"></i> صور رسائل وآراء المتدربين</h5>
-              <button class="btn btn-warning text-dark rounded-pill fw-bold px-4" data-bs-toggle="modal" data-bs-target="#uploadReviewModal"><i class="fa-solid fa-upload"></i> رفع صورة تقييم</button>
-          </div>
-          <div class="row g-4">
-              <?php if(empty($review_images)): ?> <div class="col-12"><div class="alert alert-secondary text-center fw-bold">لا توجد صور تقييمات حالياً.</div></div> <?php endif; ?>
-              <?php foreach($review_images as $img): ?>
-              <div class="col-md-3 col-6 text-center">
-                  <div class="card border-0 shadow-sm rounded-4 overflow-hidden h-100">
-                      <img src="../uploads/reviews/<?php echo $img['image_name']; ?>" style="height: 250px; object-fit: contain; width: 100%; background: #f8f9fc; padding: 5px;">
-                      <div class="card-footer bg-white border-0 p-2"><a href="?delete_img=<?php echo $img['id']; ?>" class="btn btn-sm btn-danger rounded-pill w-100 fw-bold" onclick="return confirm('تأكيد الحذف؟')"><i class="fa-solid fa-trash"></i> حذف</a></div>
-                  </div>
-              </div>
-              <?php endforeach; ?>
-          </div>
-      </div>
-  </div>
-
-</div> <!-- نهاية tab-content -->
-
-<!-- Modal 1: رفع صورة معرض -->
-<div class="modal fade" id="uploadGalleryModal" tabindex="-1"><div class="modal-dialog modal-dialog-centered"><div class="modal-content border-0 shadow-lg rounded-4"><div class="modal-header bg-primary text-white border-0 rounded-top-4"><h5 class="modal-title fw-bold"><i class="fa-solid fa-camera"></i> إضافة للمعرض</h5><button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div><form method="POST" enctype="multipart/form-data"><div class="modal-body p-4"><input type="hidden" name="image_type" value="gallery"><label class="form-label fw-bold">اختر الصورة <span class="text-danger">*</span></label><input type="file" name="image" class="form-control" accept="image/*" required></div><div class="modal-footer border-0 bg-light rounded-bottom-4"><button type="submit" name="upload_image" class="btn btn-primary w-100 rounded-pill fw-bold">رفع للموقع</button></div></form></div></div></div>
-
-<!-- Modal 2: رفع صورة تقييم -->
-<div class="modal fade" id="uploadReviewModal" tabindex="-1"><div class="modal-dialog modal-dialog-centered"><div class="modal-content border-0 shadow-lg rounded-4"><div class="modal-header bg-warning text-dark border-0 rounded-top-4"><h5 class="modal-title fw-bold"><i class="fa-solid fa-comment-sms"></i> إضافة صورة تقييم</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div><form method="POST" enctype="multipart/form-data"><div class="modal-body p-4"><input type="hidden" name="image_type" value="review"><label class="form-label fw-bold">اختر لقطة الشاشة (Screenshot) <span class="text-danger">*</span></label><input type="file" name="image" class="form-control" accept="image/*" required></div><div class="modal-footer border-0 bg-light rounded-bottom-4"><button type="submit" name="upload_image" class="btn btn-warning w-100 rounded-pill fw-bold text-dark">رفع للموقع</button></div></form></div></div></div>
-
-</div></div><script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-<script>
-    document.getElementById("openSidebarBtn").addEventListener("click", () => { document.getElementById("sidebar").classList.add("active"); document.getElementById("sidebarOverlay").classList.add("active"); });
-    document.getElementById("sidebarOverlay").addEventListener("click", () => { document.getElementById("sidebar").classList.remove("active"); document.getElementById("sidebarOverlay").classList.remove("active"); });
-    // تفعيل التبويبات الفخمة
-    var triggerTabList = [].slice.call(document.querySelectorAll('#adminTabs a'))
-    triggerTabList.forEach(function (triggerEl) { var tabTrigger = new bootstrap.Tab(triggerEl); triggerEl.addEventListener('click', function (event) { event.preventDefault(); tabTrigger.show(); }); });
-</script></body></html>
+<?php foreach (['gallery' => [$gallery, 'gallery'], 'reviews' => [$reviews, 'review']] as $tab => [$imgs, $type]): ?>
+<div class="tab-pane fade" id="t_<?= $tab ?>"><div class="dcard"><div class="dcard-b"><form method="post" enctype="multipart/form-data" class="d-flex gap-2 flex-wrap mb-4"><?= csrf_field() ?><input type="hidden" name="act" value="upload"><input type="hidden" name="tab" value="<?= $tab ?>"><input type="hidden" name="image_type" value="<?= $type ?>">
+  <input type="file" name="image" accept="image/jpeg,image/png,image/webp" class="form-control" style="max-width:360px" required><button class="btn-aramio"><i class="fa-solid fa-upload"></i> <?= e(d('رفع', 'Upload')) ?></button></form>
+  <div class="row g-3"><?php foreach ($imgs as $im): ?><div class="col-6 col-md-3"><div class="position-relative"><img src="../uploads/<?= $type === 'gallery' ? 'gallery' : 'reviews' ?>/<?= e($im['image_name']) ?>" loading="lazy" class="w-100 rounded-3" style="height:150px;object-fit:cover" alt="">
+    <div class="position-absolute top-0 end-0 m-1"><?= action_btn('', ['act' => 'delete_img', 'id' => $im['id'], 'tab' => $tab], 'btn-soft-bad', d('حذف الصورة؟', 'Delete image?'), 'fa-trash') ?></div></div></div><?php endforeach; ?>
+  <?php if (!$imgs): ?><div class="empty"><i class="fa-solid fa-images"></i></div><?php endif; ?></div></div></div></div><?php endforeach; ?>
+</div>
+<?php
+$footExtra = '<script>if(location.hash){var b=document.querySelector("[data-bs-target=\'#t_"+location.hash.slice(1)+"\']");b&&new bootstrap.Tab(b).show()}
+aiTest.addEventListener("click",function(){var o=document.getElementById("aiTestOut");o.textContent="…";AI_ASK("../api/ai_test.php",{},function(r){o.textContent=r.message},this)});</script>';
+require '../includes/partials/dash_footer.php';

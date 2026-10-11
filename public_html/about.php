@@ -45,7 +45,7 @@ require 'includes/partials/header.php';
   <div class="d-flex flex-wrap justify-content-center gap-2"><?php foreach ($specialties as $s): ?><span class="badge-cat fs-6 py-2 px-3"><?= e($s) ?></span><?php endforeach; ?></div>
   <a href="courses.php" class="btn-aramio mt-5 px-5 py-2 fs-5"><?= e($A['btn_start']) ?></a></div></section>
 
-<?php if ($reviews): ?><section class="section"><div class="container"><div class="section-head"><h2><?= e($A['reviews_gallery_title']) ?></h2></div><div class="swiper reviewsSwiper"><div class="swiper-wrapper">
+<?php if ($reviews): ?><section class="section"><div class="container"><div class="section-head"><h2><?= e(t('testimonials_title')) ?></h2></div><div class="swiper reviewsSwiper"><div class="swiper-wrapper">
   <?php foreach ($reviews as $img): ?><div class="swiper-slide text-center"><img src="uploads/reviews/<?= e($img) ?>" loading="lazy" class="rounded-4 border" style="max-height:380px;object-fit:contain;background:#fff" alt=""></div><?php endforeach; ?></div><div class="swiper-pagination"></div></div></div></section><?php endif; ?>
 <?php if ($gallery): ?><section class="section section-alt"><div class="container"><div class="section-head"><h2><?= e(t('gallery_title')) ?></h2></div><div class="swiper gallerySwiper"><div class="swiper-wrapper">
   <?php foreach ($gallery as $img): ?><div class="swiper-slide"><img src="uploads/gallery/<?= e($img) ?>" loading="lazy" class="w-100 rounded-4" style="height:250px;object-fit:cover" alt=""></div><?php endforeach; ?></div></div></div></section><?php endif; ?>
