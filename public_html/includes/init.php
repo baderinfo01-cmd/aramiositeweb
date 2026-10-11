@@ -8,6 +8,7 @@ require_once __DIR__ . '/i18n.php';
 require_once __DIR__ . '/helpers.php';
 require_once __DIR__ . '/ai.php';
 require_once __DIR__ . '/dash.php';
+require_once __DIR__ . '/trainee.php';
 
 $lang = detect_lang();
 $dir  = SUPPORTED_LANGS[$lang]['dir'];

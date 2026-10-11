@@ -62,3 +62,4 @@ function notify_user(int $userId, string $title, string $body = '', string $link
     try { $pdo->prepare("INSERT INTO user_notifications (user_id, title, body, link) VALUES (?,?,?,?)")->execute([$userId, $title, mb_substr($body, 0, 480), $link]); } catch (Throwable $e) {}
 }
 function strong_password(string $p): bool { return strlen($p) >= 8 && preg_match('/[A-Za-z\p{L}]/u', $p) && preg_match('/\d/', $p); }
+function url_ok_pub(?string $u): bool { return (bool)$u && (bool)filter_var($u, FILTER_VALIDATE_URL) && (bool)preg_match('#^https?://#i', $u); }
